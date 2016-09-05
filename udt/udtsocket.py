@@ -3,7 +3,7 @@ from .packet import *
 from .buffer import *
 
 UDT_VER = 4
-MAX_PKT_SIZE = 576
+MAX_PKT_SIZE = 1500
 
 # Socket types
 STREAM = 1
@@ -23,7 +23,7 @@ class UDTSocket(object):
 		self.host = host
 		self.port = port
 
-		self.mss = 1500
+		self.mss = MAX_PKT_SIZE
 		self.sync_sending = True
 		self.sync_recving = True
 		self.flight_flag_size = 25600
@@ -42,15 +42,20 @@ class UDTSocket(object):
 
 		self.udt_ver = UDT_VER
 
+	def set_reuse_addr(self):
+		self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
 	def connect(self):
+		if self.reuse_addr:
+			self.set_reuse_addr()
+
 		self._socket.connect((self.host, self.port))
 
-	def listen(self, n=5):
-		self._socket.bind((self.host, self.port))
-		self._socket.listen(n)
+	def listen(self):
+		if self.reuse_addr:
+			self.set_reuse_addr()
 
-	def accept(self):
-		return self._socket.accept()
+		self._socket.bind((self.host, self.port))
 
 	def _send(self, data):
 		return self._socket.sendall(data)
@@ -70,30 +75,31 @@ class UDTSocket(object):
 			udt_ver=self.udt_ver,
 			sock_type=self.sock_type,
 			init_pkt_seq=0, # rand value?
-			max_pkt_size=MAX_PKT_SIZE,
-			max_flow_win_size=8192,
+			max_pkt_size=self.mss,
+			max_flow_win_size=self.flight_flag_size,
 			sock_id=1, # rand value?
 			syn_cookie=0,
 			sock_addr=self._socket.getpeername()[0]
 		)
-		b = BytesIO(MAX_PKT_SIZE)
+		b = BytesIO(self.mss)
 		p.pack_into(b)
-		self._send(b[:p.size()])
+		self._send(b.read())
 
 		self._recv_into(b, p.size())
 		p.unpack_from(b)
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1
 		p.pack_into(b)
-		self._send(b[:p.size()])
+		self._send(b.read())
 
-# s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-# s.bind((HOST, PORT))
-# s.listen(1)
-# conn, addr = s.accept()
-# print 'Connected by', addr
-# while 1:
-#     data = conn.recv(1024)
-#     if not data: break
-#     conn.sendall(data)
-# conn.close()
+# def server():
+# 	import socket
+
+# 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# 	s.bind(('', 47008))
+# 	while 1:
+# 		(d, addr) = s.recvfrom(1024)
+# 		if not d: break
+# 		print "Recieved from "+ str(addr)
+# 		print "###", len(d)
+# 	s.close()
