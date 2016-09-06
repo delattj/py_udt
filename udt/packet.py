@@ -21,9 +21,13 @@ class Packet(object):
 	)
 	_struct = Struct('>II')
 
-	def __init__(self, **kwargs):
-		for attr in self.__slots__:
-			setattr(self, attr, kwargs.get(attr, 0))
+	def __init__(self, bufferio=None, **kwargs):
+		if bufferio is None:
+			for attr in self.__slots__:
+				setattr(self, attr, kwargs.get(attr, 0))
+
+		else:
+			unpack_from(bufferio)
 
 	def pack_into(self, bufferio):
 		self._struct.pack_into(bufferio, bufferio.tell(),
@@ -140,13 +144,17 @@ class HandshakePacket(Packet):
 	)
 	_struct = Struct('>IIIIIiII16s')
 
-	def __init__(self, **kwargs):
-		kwargs['msg_type'] = handshake
-		super(HandshakePacket, self).__init__(**kwargs)
-		if not self.sock_addr:
-			self.sock_addr = b''
-		if not self.header:
-			self.header = ControlHeader(**kwargs)
+	def __init__(self, bufferio=None, **kwargs):
+		if bufferio is None:
+			kwargs['msg_type'] = handshake
+			super(HandshakePacket, self).__init__(**kwargs)
+			if not self.sock_addr:
+				self.sock_addr = b''
+			if not self.header:
+				self.header = ControlHeader(**kwargs)
+
+		else:
+			super(HandshakePacket, self).__init__(**kwargs)
 
 	def pack_into(self, bufferio):
 		self.header.pack_into(bufferio)

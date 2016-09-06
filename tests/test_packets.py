@@ -24,8 +24,8 @@ print handshake
 b.seek(0)
 handshake.pack_into(b)
 # print b
-h = udt.packet.HandshakePacket()
-h.unpack_from(b)
+h = udt.packet.HandshakePacket(b)
+# h.unpack_from(b)
 print h
 
 assert h.header.get_msg_type() == udt.packet.handshake
