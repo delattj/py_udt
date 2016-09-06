@@ -12,10 +12,17 @@ def server():
 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 	s.bind(('', 47008))
 	while 1:
-		(d, addr) = s.recvfrom(1024)
+		b = udt.udtsocket.BytesIO(1500)
+		(d, addr) = s.recvfrom_into(b, 1500)
 		if not d: break
 		print "Recieved from "+ str(addr)
-		print "###", len(d)
+		print "###", d
+		p = udt.udtsocket.HandshakePacket()
+		b.seek(d)
+		p.unpack_from(b)
+		p.req_type = 1
+		p.header.dst_sock_id = p.sock_id
+		s.sendto(b.read(), addr)
 	s.close()
 
 t = Thread(target=server)
