@@ -72,19 +72,22 @@ class UDPServer(object):
 		return c
 
 	def _handle_read(self):
-		b = BytesIO(self.rcv_buffer_size)
-		try:
-			size, addr = self.socket.recvfrom_into(b, b.size)
+		while 1:
+			b = BytesIO(self.rcv_buffer_size)
+			try:
+				size, addr = self.socket.recvfrom_into(b, b.size)
 
-		except: # retry later
-			size = 0
+			except: # retry later
+				size = 0
 
-		if size:
+			if not size:
+				break
+
 			c = self._get_client(addr)
 			self.handle_packet(c, b)
 
 	def _handle_write(self):
-		if self.outbound_packet:
+		while self.outbound_packet:
 			try:
 				self.socket.sendto(*self.outbound_packet[0])
 				self.outbound_packet.popleft()
