@@ -27,7 +27,7 @@ class Packet(object):
 				setattr(self, attr, kwargs.get(attr, 0))
 
 		else:
-			unpack_from(bufferio)
+			self.unpack_from(bufferio)
 
 	def pack_into(self, bufferio):
 		self._struct.pack_into(bufferio, bufferio.tell(),
@@ -61,8 +61,8 @@ class DataPacket(Packet):
 	)
 	_struct = Struct('>IIII')
 
-	def __init__(self, **kwargs):
-		super(DataPacket, self).__init__(**kwargs)
+	def __init__(self, bufferio=None, **kwargs):
+		super(DataPacket, self).__init__(bufferio, **kwargs)
 		if not self.data:
 			self.data = b''
 
@@ -87,12 +87,12 @@ class DataPacket(Packet):
 		)
 		bufferio.write(self.data, self._struct.size)
 
-	def unpack_from(self, bufferio, size):
+	def unpack_from(self, bufferio, data_size=None):
 		struct = self._struct
 		unpacked = struct.unpack_from(bufferio)
 		for attr, value in zip(self.__slots__[:-1], unpacked):
 			setattr(self, attr, value)
-		self.data = bufferio.read(size, struct.size)
+		self.data = bufferio.read(data_size, struct.size)
 
 class ControlHeader(Packet):
 	__slots__ = (
@@ -104,8 +104,8 @@ class ControlHeader(Packet):
 	)
 	_struct = Struct('>HHIII')
 
-	def __init__(self, **kwargs):
-		super(ControlHeader, self).__init__(**kwargs)
+	def __init__(self, bufferio=None, **kwargs):
+		super(ControlHeader, self).__init__(bufferio, **kwargs)
 		self.set_msg_type(self.msg_type)
 
 	def set_msg_type(self, msg_type):
@@ -154,7 +154,8 @@ class HandshakePacket(Packet):
 				self.header = ControlHeader(**kwargs)
 
 		else:
-			super(HandshakePacket, self).__init__(**kwargs)
+			self.header = ControlHeader()
+			super(HandshakePacket, self).__init__(bufferio)
 
 	def pack_into(self, bufferio):
 		self.header.pack_into(bufferio)

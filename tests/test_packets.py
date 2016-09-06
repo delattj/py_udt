@@ -12,13 +12,13 @@ print data
 data.pack_into(b)
 # print b
 d = udt.packet.DataPacket()
-d.unpack_from(b, 8)
+d.unpack_from(b)
 
 assert d.seq == 1
 assert d.msg == 5
 assert d.ts == 2
 assert d.dst_sock_id == 3
-assert d.data == 'Bonjour!'
+assert d.data == 'Bonjour!', "Got: %s"% d.data
 
 print handshake
 b.seek(0)

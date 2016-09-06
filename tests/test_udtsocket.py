@@ -10,12 +10,9 @@ from time import sleep
 class UDTServer(udt.udpserver.UDPServer):
 
 	def handle_packet(self, client, bufferio):
-		p = udt.udtsocket.HandshakePacket()
-		p.unpack_from(bufferio)
-		print p
+		p = udt.udtsocket.HandshakePacket(bufferio)
+		print "!", p
 
-		bufferio.seek(0)
-		p.unpack_from(bufferio)
 		p.req_type = 1
 		p.header.dst_sock_id = p.sock_id
 		client.send(bufferio.read())
@@ -52,10 +49,8 @@ def client():
 	s.close()
 
 t = Thread(target=client)
-t.daemon = True
 t.start()
 
 s = UDTServer()
 s.bind(47008)
 s.start()
-

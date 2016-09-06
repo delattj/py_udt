@@ -8,8 +8,8 @@ class BytesIO(bytearray):
 		return self
 
 	def read(self, n=None, start=0):
-		n = self._w_offset if n is None else min(n, self._w_offset)
-		t = n + start
+		t = self._w_offset if n is None else min(n, (self._w_offset - start)) + start
+
 		return self[min(start, t):t]
 
 	__str__ = read
