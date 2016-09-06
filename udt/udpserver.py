@@ -16,13 +16,14 @@ class UDPClient(object):
 		self.inbound_packet = deque(maxlen=window_size)
 		self.handshaked = False
 		self.outbound_packet = outbound_packet
+		self._dangling_packet = None
 
 	def send(self, bufferio):
 		self.outbound_packet.append((bufferio, self.addr))
 
 class UDPServer(object):
 	def __init__(self, ip_version=AF_INET, ioloop=None,
-		rcv_buffer_size=8192, window_size=25600):
+		max_pkt_size=1500, window_size=25600):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self._state = None
@@ -32,7 +33,7 @@ class UDPServer(object):
 		self.clients = {}
 		self.outbound_packet = deque(maxlen=window_size)
 		self.window_size = window_size
-		self.rcv_buffer_size = rcv_buffer_size
+		self.max_pkt_size = max_pkt_size
 
 	def bind(self, port):
 		self.port = port
@@ -55,8 +56,12 @@ class UDPServer(object):
 			self._state = self._state | state
 			self.ioloop.update_handler(self.socket.fileno(), self._state)
 
+	def closed(self):
+		return self.socket is None
+
 	def close(self):
 		self.ioloop.remove_handler(self.socket.fileno())
+		self.socket.shutdown(socket.SHUT_RDWR)
 		self.socket.close()
 		self.socket = None
 
@@ -73,29 +78,61 @@ class UDPServer(object):
 
 	def _handle_read(self):
 		while 1:
-			b = BytesIO(self.rcv_buffer_size)
+
 			try:
-				size, addr = self.socket.recvfrom_into(b, b.size)
+				data, addr = self.socket.recvfrom(self.max_pkt_size)
 
-			except: # retry later
-				size = 0
+			except:
+				data = ''
 
-			if not size:
+			if not data: # retry later
 				break
 
 			c = self._get_client(addr)
-			self.handle_packet(c, b)
+			if c._dangling_packet is None:
+				b = BytesIO(self.max_pkt_size)
+
+			else:
+				b = c._dangling_packet
+
+			b_missing = self.max_pkt_size - b.tell()
+			if len(data) > b_missing:
+				b.write(data[:b_missing])
+				c.inbound_packet.append(b)
+				data = data[b_missing:]
+				b = BytesIO(self.max_pkt_size)
+
+			b.write(data)
+
+			if b.tell() != self.max_pkt_size:
+				c._dangling_packet = b
+
+			else:
+				c._dangling_packet = None
+				c.inbound_packet.append(b)
+
+			# TODO: queue it in a callback ???
+			while c.inbound_packet:
+				self.handle_packet(c, c.inbound_packet.popleft())
+
 
 	def _handle_write(self):
-		while self.outbound_packet:
-			try:
-				self.socket.sendto(*self.outbound_packet[0])
+		try:
+			while self.outbound_packet:
+				addr, b = self.outbound_packet[0]
+				while b:
+					n = self.socket.sendto(addr, b)
+					b = b[n:]
+
 				self.outbound_packet.popleft()
 
-			except: # retry later
-				pass
+		except: # retry later
+			pass
 
 	def _handle_events(self, fd, events):
+		if self.closed():
+			return
+
 		if events & self.ioloop.READ:
 			self._handle_read()
 

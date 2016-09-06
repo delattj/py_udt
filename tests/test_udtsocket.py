@@ -38,13 +38,14 @@ class UDTServer(udt.udpserver.UDPServer):
 # 	s.close()
 
 def client():
-	sleep(2)
+	sleep(1)
 
 	c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
 	c.connect()
 
 	c.handshake()
 
+	sleep(1)
 	s.ioloop.stop()
 	s.close()
 

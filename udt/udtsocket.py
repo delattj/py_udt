@@ -60,11 +60,12 @@ class UDTSocket(object):
 	def _send(self, data):
 		return self._socket.sendall(data)
 
-	def _recv(self, size):
-		return self._socket.recv(size)
-
-	def _recv_into(self, bufferio, size):
-		return self._socket.recv_into(bufferio, size)
+	def _recv(self, bufferio):
+		count = self.mss
+		while count:
+			d = self._socket.recv(count)
+			bufferio.write(d)
+			count -= len(d)
 
 	def close(self):
 		self._socket.close()
@@ -83,14 +84,14 @@ class UDTSocket(object):
 		)
 		b = BytesIO(self.mss)
 		p.pack_into(b)
-		self._send(b.read())
+		self._send(b)
 
-		self._recv_into(b, p.size())
+		self._recv(b)
 		p.unpack_from(b)
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1
 		p.pack_into(b)
-		self._send(b.read())
+		self._send(b)
 
 # def server():
 # 	import socket
