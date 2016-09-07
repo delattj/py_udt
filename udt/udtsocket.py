@@ -84,14 +84,14 @@ class UDTSocket(object):
 		)
 		b = BytesIO(self.mss)
 		p.pack_into(b)
-		self._send(b)
+		self._send(b.read())
 
 		self._recv(b)
 		p.unpack_from(b)
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1
 		p.pack_into(b)
-		self._send(b)
+		self._send(b.read())
 
 # def server():
 # 	import socket

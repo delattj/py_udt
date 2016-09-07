@@ -15,15 +15,15 @@ if hasattr(errno, "WSAEWOULDBLOCK"):
     _ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)
 
 class UDPClient(object):
-	def __init__(self, addr, window_size, outbound_packet):
+	def __init__(self, addr, window_size, sendto):
 		self.addr = addr
 		self.inbound_packet = deque(maxlen=window_size)
 		self.handshaked = False
-		self.outbound_packet = outbound_packet
+		self._sendto = sendto
 		self._dangling_packet = None
 
 	def send(self, bufferio):
-		self.outbound_packet.append((bufferio, self.addr))
+		self._sendto(bufferio, self.addr)
 
 class UDPServer(object):
 	def __init__(self, ip_version=AF_INET, ioloop=None,
@@ -60,6 +60,11 @@ class UDPServer(object):
 			self._state = self._state | state
 			self.ioloop.update_handler(self.socket.fileno(), self._state)
 
+	def _remove_io_state(self, state):
+		if self._state is not None and self._state & state:
+			self._state ^= state
+			self.ioloop.update_handler(self.socket.fileno(), self._state)
+
 	def closed(self):
 		return self.socket is None
 
@@ -74,13 +79,13 @@ class UDPServer(object):
 			c = self.clients[addr]
 
 		else:
-			c = UDPClient(addr, self.window_size, self.outbound_packet)
+			c = UDPClient(addr, self.window_size, self._send)
 			self.clients[addr] = c
-			self._add_io_state(self.ioloop.WRITE)
 
 		return c
 
 	def _handle_read(self):
+		clients = set() # keep track of delivered clients
 		while 1:
 
 			try:
@@ -90,6 +95,7 @@ class UDPServer(object):
 				break # retry later
 
 			c = self._get_client(addr)
+			clients.add(c)
 			if data:
 				if c._dangling_packet is None:
 					b = BytesIO(self.max_pkt_size)
@@ -97,16 +103,27 @@ class UDPServer(object):
 
 				else:
 					b = c._dangling_packet
+					remaining = b.size - b.tell()
+					if len(data) > remaining:
+						# Buffer is overflowing
+						b.write(data[:remaining])
+						c.inbound_packet.append(b)
+						b = BytesIO(self.max_pkt_size)
+						data = data[remaining:]
 
 				b.write(data)
 
-			elif c._dangling_packet is not None:
-				c.inbound_packet.append(c._dangling_packet)
-				c._dangling_packet = None
+		for c in clients:
+			c.inbound_packet.append(c._dangling_packet)
+			c._dangling_packet = None
 
-				# TODO: queue it in a callback ???
-				while c.inbound_packet:
-					self.handle_packet(c, c.inbound_packet.popleft())
+			# TODO: queue it in a callback ???
+			while c.inbound_packet:
+				self.handle_packet(c, c.inbound_packet.popleft())
+
+	def _send(self, bufferio, addr):
+		self.outbound_packet.append((bufferio, addr))
+		self._add_io_state(self.ioloop.WRITE)
 
 	def _handle_write(self):
 		try:
@@ -117,6 +134,8 @@ class UDPServer(object):
 					b[:] = b[n:]
 
 				self.outbound_packet.popleft()
+
+			self._remove_io_state(self.ioloop.WRITE)
 
 		except: # retry later
 			pass

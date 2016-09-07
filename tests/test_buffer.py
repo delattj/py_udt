@@ -11,3 +11,7 @@ assert u.read(5) == 'Bonjo'
 
 f.write(u)
 assert f == 'Bonjo'
+
+f[:] = f[1:]
+
+assert f.read() == 'onjo'
