@@ -10,6 +10,10 @@ from .buffer import BytesIO
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
+_ERRNO_WOULDBLOCK = (errno.EWOULDBLOCK, errno.EAGAIN)
+if hasattr(errno, "WSAEWOULDBLOCK"):
+    _ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)
+
 class UDPClient(object):
 	def __init__(self, addr, window_size, outbound_packet):
 		self.addr = addr
@@ -83,46 +87,34 @@ class UDPServer(object):
 				data, addr = self.socket.recvfrom(self.max_pkt_size)
 
 			except:
-				data = ''
-
-			if not data: # retry later
-				break
+				break # retry later
 
 			c = self._get_client(addr)
-			if c._dangling_packet is None:
-				b = BytesIO(self.max_pkt_size)
+			if data:
+				if c._dangling_packet is None:
+					b = BytesIO(self.max_pkt_size)
+					c._dangling_packet = b
 
-			else:
-				b = c._dangling_packet
+				else:
+					b = c._dangling_packet
 
-			b_missing = self.max_pkt_size - b.tell()
-			if len(data) > b_missing:
-				b.write(data[:b_missing])
-				c.inbound_packet.append(b)
-				data = data[b_missing:]
-				b = BytesIO(self.max_pkt_size)
+				b.write(data)
 
-			b.write(data)
-
-			if b.tell() != self.max_pkt_size:
-				c._dangling_packet = b
-
-			else:
+			elif c._dangling_packet is not None:
+				c.inbound_packet.append(c._dangling_packet)
 				c._dangling_packet = None
-				c.inbound_packet.append(b)
 
-			# TODO: queue it in a callback ???
-			while c.inbound_packet:
-				self.handle_packet(c, c.inbound_packet.popleft())
-
+				# TODO: queue it in a callback ???
+				while c.inbound_packet:
+					self.handle_packet(c, c.inbound_packet.popleft())
 
 	def _handle_write(self):
 		try:
 			while self.outbound_packet:
-				addr, b = self.outbound_packet[0]
+				b, addr = self.outbound_packet[0]
 				while b:
-					n = self.socket.sendto(addr, b)
-					b = b[n:]
+					n = self.socket.sendto(b, addr)
+					b[:] = b[n:]
 
 				self.outbound_packet.popleft()
 
