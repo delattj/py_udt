@@ -15,3 +15,5 @@ assert f == 'Bonjo'
 f[:] = f[1:]
 
 assert f.read() == 'onjo'
+
+print f

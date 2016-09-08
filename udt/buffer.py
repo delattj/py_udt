@@ -1,18 +1,28 @@
 
 class BytesIO(bytearray):
 
-	def __new__(cls, size):
-		self = super(BytesIO, cls).__new__(cls, '\0'*size)
-		self.size = size
-		self._w_offset = 0
+	def __new__(cls, source):
+		if isinstance(source, int):
+			self = super(BytesIO, cls).__new__(cls, '\0'*source)
+			self.size = source
+			self._w_offset = 0
+
+		else:
+			self = super(BytesIO, cls).__new__(cls, source)
+			self.size = len(source)
+			self._w_offset = len(source)
+
 		return self
 
 	def read(self, n=None, start=0):
 		t = self._w_offset if n is None else min(n, (self._w_offset - start)) + start
 
+		# return BytesIO(self[min(start, t):t])
 		return self[min(start, t):t]
 
-	__str__ = read
+	def __str__(self):
+		# return super(BytesIO, self).__str__()
+		return str(self.read())
 
 	def raw(self):
 		return self[:]
