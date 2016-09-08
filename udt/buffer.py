@@ -38,7 +38,7 @@ class BytesIO(bytearray):
 		self[offset:end] = d[:d_end] if d_end != len_d else d
 		self._w_offset = end
 
-	def seek(self, n):
+	def set_length(self, n):
 		self._w_offset = min(n, self.size)
 
 	def tell(self):

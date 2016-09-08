@@ -20,6 +20,7 @@ class UDTSocket(object):
 		self.sock_type = s_type
 		s_type = socket.SOCK_STREAM if s_type == TCP else socket.SOCK_DGRAM
 		self._socket = socket.socket(ip_version, s_type)
+		self._socket.setblocking(0)
 		self.host = host
 		self.port = port
 
@@ -61,11 +62,13 @@ class UDTSocket(object):
 		return self._socket.sendall(data)
 
 	def _recv(self, bufferio):
-		count = self.mss
-		while count:
-			d = self._socket.recv(count)
-			bufferio.write(d)
-			count -= len(d)
+		n = 0
+		while 1:
+			try:
+				n += self._socket.recv_into(bufferio, self.mss)
+
+			except:
+				if n: break
 
 	def close(self):
 		self._socket.close()
@@ -88,6 +91,7 @@ class UDTSocket(object):
 
 		self._recv(b)
 		p.unpack_from(b)
+		print "@", p
 		print "Response type:", p.req_type
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1

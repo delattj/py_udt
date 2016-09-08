@@ -34,7 +34,7 @@ class Packet(object):
 			self.ts,
 			self.dst_sock_id
 		)
-		bufferio.seek(bufferio.tell() + self._struct.size)
+		bufferio.set_length(bufferio.tell() + self._struct.size)
 
 	def unpack_from(self, bufferio):
 		self.ts, self.dst_sock_id = self._struct.unpack_from(bufferio)
@@ -122,7 +122,7 @@ class ControlHeader(Packet):
 			self.ts,
 			self.dst_sock_id
 		)
-		bufferio.seek(self._struct.size)
+		bufferio.set_length(self._struct.size)
 
 	def unpack_from(self, bufferio):
 		unpacked = self._struct.unpack_from(bufferio)
@@ -162,7 +162,7 @@ class HandshakePacket(Packet):
 		self._struct.pack_into(bufferio, bufferio.tell(),
 			*[getattr(self, a) for a in self.__slots__[1:]]
 		)
-		bufferio.seek(bufferio.tell() + self._struct.size)
+		bufferio.set_length(bufferio.tell() + self._struct.size)
 
 	def unpack_from(self, bufferio):
 		self.header.unpack_from(bufferio)
