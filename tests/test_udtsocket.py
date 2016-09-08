@@ -15,7 +15,8 @@ class UDTServer(udt.udpserver.UDPServer):
 
 		p.req_type = 1
 		p.header.dst_sock_id = p.sock_id
-		client.send(bufferio.read())
+		p.pack_into(bufferio)
+		client.send(bufferio)
 
 
 # def server():

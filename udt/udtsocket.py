@@ -88,6 +88,7 @@ class UDTSocket(object):
 
 		self._recv(b)
 		p.unpack_from(b)
+		print "Response type:", p.req_type
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1
 		p.pack_into(b)

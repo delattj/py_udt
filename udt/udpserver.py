@@ -86,40 +86,30 @@ class UDPServer(object):
 
 	def _handle_read(self):
 		clients = set() # keep track of delivered clients
+		b = BytesIO(self.max_pkt_size)
+
 		while 1:
+			n = 0
 
 			try:
-				data, addr = self.socket.recvfrom(self.max_pkt_size)
+				n, addr = self.socket.recvfrom_into(b, self.max_pkt_size)
 
 			except:
 				break # retry later
 
+			if not n:
+				continue
+
 			c = self._get_client(addr)
 			clients.add(c)
-			if data:
-				if c._dangling_packet is None:
-					b = BytesIO(self.max_pkt_size)
-					c._dangling_packet = b
-
-				else:
-					b = c._dangling_packet
-					remaining = b.size - b.tell()
-					if len(data) > remaining:
-						# Buffer is overflowing
-						b.write(data[:remaining])
-						c.inbound_packet.append(b)
-						b = BytesIO(self.max_pkt_size)
-						data = data[remaining:]
-
-				b.write(data)
+			b.seek(n)
+			c.inbound_packet.append(b)
 
 		for c in clients:
-			c.inbound_packet.append(c._dangling_packet)
-			c._dangling_packet = None
-
 			# TODO: queue it in a callback ???
 			while c.inbound_packet:
-				self.handle_packet(c, c.inbound_packet.popleft())
+				b = c.inbound_packet.popleft()
+				self.handle_packet(c, b)
 
 	def _send(self, bufferio, addr):
 		self.outbound_packet.append((bufferio, addr))
