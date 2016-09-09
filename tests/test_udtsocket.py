@@ -10,8 +10,8 @@ from time import sleep
 class UDTServer(udt.udpserver.UDPServer):
 
 	def handle_packet(self, client):
-		header_size = udt.udtsocket.ControlHeader._struct.size
-		handshake_size = udt.udtsocket.HandshakePacket._struct.size
+		header_size = udt.udtsocket.ControlHeader.size()
+		handshake_size = udt.udtsocket.HandshakePacket.size()
 
 		while 1:
 			h_buff = client.get_bytes(header_size)
@@ -20,19 +20,17 @@ class UDTServer(udt.udpserver.UDPServer):
 
 			h = udt.udtsocket.ControlHeader(h_buff)
 
-			if h.get_msg_type() == udt.udtsocket.handshake:
+			if h.get_msg_type() == udt.udtsocket.ControlPacket.handshake:
 
 				hd_buff = client.get_bytes(handshake_size)
 				if hd_buff:
-					bufferio = udt.udtsocket.BytesIO(header_size + handshake_size)
-					bufferio.write(h_buff)
-					bufferio.write(hd_buff)
-
-					p = udt.udtsocket.HandshakePacket(bufferio)
+					p = udt.udtsocket.HandshakePacket(hd_buff, header=h)
 					print "!", p
 					p.req_type = 1
 					p.header.dst_sock_id = p.sock_id
+					bufferio = udt.udtsocket.BytesIO(handshake_size+header_size)
 					p.pack_into(bufferio)
+					# print udt.udtsocket.HandshakePacket(bufferio)
 					client.send(bufferio)
 
 

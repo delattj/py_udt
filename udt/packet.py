@@ -4,22 +4,9 @@ from struct import Struct
 flag_bit_32 = 1 << 31 # 32 bit
 flag_bit_16 = 1 << 15 # 16 bit
 
-# Control packet types
-handshake    = 0x0
-keepalive    = 0x1
-ack          = 0x2
-nak          = 0x3
-congestion   = 0x4 # Congestion Warning
-shutdown     = 0x5
-ack2         = 0x6
-msg_drop_req = 0x7
-
 class Packet(object):
-	__slots__ = (
-		'ts',
-		'dst_sock_id',
-	)
-	_struct = Struct('>II')
+	__slots__ = ()
+	_struct = Struct('')
 
 	def __init__(self, bufferio=None, **kwargs):
 		if bufferio is None:
@@ -29,15 +16,19 @@ class Packet(object):
 		else:
 			self.unpack_from(bufferio)
 
-	def pack_into(self, bufferio):
-		self._struct.pack_into(bufferio, bufferio.tell(),
-			self.ts,
-			self.dst_sock_id
+	def fields(self):
+		return self.__slots__
+
+	def pack_into(self, bufferio, offset=0):
+		self._struct.pack_into(bufferio, offset,
+			*[getattr(self, a) for a in self.fields()]
 		)
-		bufferio.set_length(bufferio.tell() + self._struct.size)
+		bufferio.set_length(offset + self.size())
 
 	def unpack_from(self, bufferio):
-		self.ts, self.dst_sock_id = self._struct.unpack_from(bufferio)
+		unpacked = self._struct.unpack_from(bufferio)
+		for attr, value in zip(self.fields(), unpacked):
+			setattr(self, attr, value)
 
 	def __repr__(self):
 		r = self.__class__.__name__ +'('
@@ -46,10 +37,9 @@ class Packet(object):
 		)
 		return r +')'
 
-	def size(self):
-		if hasattr(self, 'header'):
-			return self.header._struct.size + self._struct.size
-		return self._struct.size
+	@classmethod
+	def size(cls):
+		return cls._struct.size
 
 class DataPacket(Packet):
 	__slots__ = (
@@ -65,6 +55,9 @@ class DataPacket(Packet):
 		super(DataPacket, self).__init__(bufferio, **kwargs)
 		if not self.data:
 			self.data = b''
+
+	def fields(self):
+		return self.__slots__[:-1]
 
 	def set_seq(self, seq):
 		self.seq = seq & 0x7FFFFFFF
@@ -82,17 +75,12 @@ class DataPacket(Packet):
 		return self.msg & 0x1FFFFFFF
 
 	def pack_into(self, bufferio):
-		self._struct.pack_into(bufferio, 0,
-			*[getattr(self, a) for a in self.__slots__[:-1]]
-		)
-		bufferio.write(self.data, self._struct.size)
+		super(DataPacket, self).pack_into(bufferio)
+		bufferio.write(self.data)
 
 	def unpack_from(self, bufferio, data_size=None):
-		struct = self._struct
-		unpacked = struct.unpack_from(bufferio)
-		for attr, value in zip(self.__slots__[:-1], unpacked):
-			setattr(self, attr, value)
-		self.data = bufferio.read(data_size, struct.size)
+		super(DataPacket, self).unpack_from(bufferio)
+		self.data = bufferio.read(data_size, self.size())
 
 class ControlHeader(Packet):
 	__slots__ = (
@@ -122,14 +110,52 @@ class ControlHeader(Packet):
 			self.ts,
 			self.dst_sock_id
 		)
-		bufferio.set_length(self._struct.size)
+		bufferio.set_length(self.size())
+
+class ControlPacket(Packet):
+	__slots__ = (
+		'header',
+	)
+	_msg_type = 0
+
+	def __init__(self, bufferio=None, **kwargs):
+		if bufferio is None:
+			super(ControlPacket, self).__init__(**kwargs)
+			if not self.header:
+				self.header = ControlHeader(msg_type=self._msg_type, **kwargs)
+
+		else:
+			has_header = 'header' in kwargs
+			if not has_header:
+				self.header = ControlHeader(bufferio)
+				bufferio[:] = bufferio[self.header.size():]
+
+			super(ControlPacket, self).__init__(bufferio)
+
+			if has_header:
+				self.header = kwargs['header']
+
+	def fields(self):
+		return self.__slots__[1:]
+
+	def pack_into(self, bufferio):
+		self.header.pack_into(bufferio)
+		super(ControlPacket, self).pack_into(bufferio, self.header.size())
 
 	def unpack_from(self, bufferio):
-		unpacked = self._struct.unpack_from(bufferio)
-		for attr, value in zip(self.__slots__, unpacked):
-			setattr(self, attr, value)
+		super(ControlPacket, self).unpack_from(bufferio)
 
-class HandshakePacket(Packet):
+	# Control packet types
+	handshake    = 0x0
+	keepalive    = 0x1
+	ack          = 0x2
+	nak          = 0x3
+	congestion   = 0x4 # Congestion Warning
+	shutdown     = 0x5
+	ack2         = 0x6
+	msg_drop_req = 0x7
+
+class HandshakePacket(ControlPacket):
 	__slots__ = (
 		'header',
 		'udt_ver',           # UDT version
@@ -143,32 +169,15 @@ class HandshakePacket(Packet):
 		'sock_addr',         # the IP address of the UDP socket to which this packet is being sent
 	)
 	_struct = Struct('>IIIIIiII16s')
+	_msg_type = ControlPacket.handshake
 
 	def __init__(self, bufferio=None, **kwargs):
-		if bufferio is None:
-			kwargs['msg_type'] = handshake
-			super(HandshakePacket, self).__init__(**kwargs)
-			if not self.sock_addr:
+		super(HandshakePacket, self).__init__(bufferio, **kwargs)
+		if not self.sock_addr:
 				self.sock_addr = b''
-			if not self.header:
-				self.header = ControlHeader(**kwargs)
-
-		else:
-			self.header = ControlHeader()
-			super(HandshakePacket, self).__init__(bufferio)
-
-	def pack_into(self, bufferio):
-		self.header.pack_into(bufferio)
-		self._struct.pack_into(bufferio, bufferio.tell(),
-			*[getattr(self, a) for a in self.__slots__[1:]]
-		)
-		bufferio.set_length(bufferio.tell() + self._struct.size)
 
 	def unpack_from(self, bufferio):
-		self.header.unpack_from(bufferio)
-		unpacked = self._struct.unpack_from(bufferio, self.header._struct.size)
-		for attr, value in zip(self.__slots__[1:], unpacked):
-			setattr(self, attr, value)
+		super(HandshakePacket, self).unpack_from(bufferio)
 		t = self.sock_addr.find('\0')
 		if t >= 0:
 			self.sock_addr = self.sock_addr[:t]

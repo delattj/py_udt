@@ -21,14 +21,14 @@ assert d.dst_sock_id == 3
 assert d.data == 'Bonjour!', "Got: %s"% d.data
 
 print handshake
-b.seek(0)
+b.set_length(0)
 handshake.pack_into(b)
 # print b
 h = udt.packet.HandshakePacket(b)
 # h.unpack_from(b)
 print h
 
-assert h.header.get_msg_type() == udt.packet.handshake
-assert h.sock_addr == '127.0.0.1'
+assert h.header.get_msg_type() == udt.packet.ControlPacket.handshake
+assert h.sock_addr == '127.0.0.1', "Got:"+ h.sock_addr
 
 
