@@ -10,7 +10,7 @@ handshake = udt.packet.HandshakePacket(req_type=1, sock_addr="127.0.0.1")
 
 print data
 data.pack_into(b)
-# print b
+assert (b[0] >> 7) == 0 # Read first bit
 d = udt.packet.DataPacket()
 d.unpack_from(b)
 
@@ -23,12 +23,13 @@ assert d.data == 'Bonjour!', "Got: %s"% d.data
 print handshake
 b.set_length(0)
 handshake.pack_into(b)
+assert (b[0] >> 7) == 1 # Read first bit
 # print b
 h = udt.packet.HandshakePacket(b)
 # h.unpack_from(b)
 print h
 
 assert h.header.get_msg_type() == udt.packet.ControlPacket.handshake
-assert h.sock_addr == '127.0.0.1', "Got:"+ h.sock_addr
+assert h.sock_addr == '127.0.0.1', "Got: %s"% h.sock_addr
 
 

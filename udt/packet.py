@@ -1,8 +1,10 @@
 from struct import Struct
+from .buffer import BytesIO
 
 # Leading bit for control data packets
 flag_bit_32 = 1 << 31 # 32 bit
 flag_bit_16 = 1 << 15 # 16 bit
+bit_flag_from_byte = lambda c: c >> 7
 
 class Packet(object):
 	__slots__ = ()
@@ -24,6 +26,11 @@ class Packet(object):
 			*[getattr(self, a) for a in self.fields()]
 		)
 		bufferio.set_length(offset + self.size())
+
+	def pack(self, header_size=0):
+		b = BytesIO(header_size+self.size())
+		self.pack_into(b)
+		return b
 
 	def unpack_from(self, bufferio):
 		unpacked = self._struct.unpack_from(bufferio)
@@ -128,7 +135,7 @@ class ControlPacket(Packet):
 			has_header = 'header' in kwargs
 			if not has_header:
 				self.header = ControlHeader(bufferio)
-				bufferio[:] = bufferio[self.header.size():]
+				bufferio = bufferio[self.header.size():]
 
 			super(ControlPacket, self).__init__(bufferio)
 
@@ -141,6 +148,9 @@ class ControlPacket(Packet):
 	def pack_into(self, bufferio):
 		self.header.pack_into(bufferio)
 		super(ControlPacket, self).pack_into(bufferio, self.header.size())
+
+	def pack(self):
+		return super(ControlPacket, self).pack(self.header.size())
 
 	def unpack_from(self, bufferio):
 		super(ControlPacket, self).unpack_from(bufferio)

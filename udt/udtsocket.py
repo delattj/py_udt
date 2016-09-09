@@ -62,13 +62,17 @@ class UDTSocket(object):
 		return self._socket.sendall(data)
 
 	def _recv(self, bufferio):
-		n = 0
 		while 1:
+			d = None
 			try:
-				n += self._socket.recv_into(bufferio, self.mss)
+				d = self._socket.recv(self.mss)
 
 			except:
-				if n: break
+				pass
+
+			if d is None: break
+			if d:
+				bufferio.write(d)
 
 	def close(self):
 		self._socket.close()
@@ -85,14 +89,15 @@ class UDTSocket(object):
 			syn_cookie=0,
 			sock_addr=self._socket.getpeername()[0]
 		)
-		b = BytesIO(self.mss)
-		p.pack_into(b)
+		# b = BytesIO(self.mss)
+		b = p.pack()
 		self._send(b.read())
 
+		b.set_length(0)
 		self._recv(b)
-		p.unpack_from(b)
-		print "@", p
-		print "Response type:", p.req_type
+		p = HandshakePacket(b)
+		print "@ %s"% p
+		print "Response type: %s"% p.req_type
 		p.header.dst_sock_id = p.sock_id
 		p.req_type = -1
 		p.pack_into(b)
