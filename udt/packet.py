@@ -132,14 +132,9 @@ class ControlPacket(Packet):
 				self.header = ControlHeader(msg_type=self._msg_type, **kwargs)
 
 		else:
-			has_header = 'header' in kwargs
-			if not has_header:
-				self.header = ControlHeader(bufferio)
-				bufferio = bufferio[self.header.size():]
-
-			super(ControlPacket, self).__init__(bufferio)
-
-			if has_header:
+			include_header = 'header' in kwargs
+			self.unpack_from(bufferio, not(include_header))
+			if include_header:
 				self.header = kwargs['header']
 
 	def fields(self):
@@ -152,7 +147,11 @@ class ControlPacket(Packet):
 	def pack(self):
 		return super(ControlPacket, self).pack(self.header.size())
 
-	def unpack_from(self, bufferio):
+	def unpack_from(self, bufferio, with_header=False):
+		if with_header:
+			self.header = ControlHeader(bufferio)
+			bufferio = bufferio[self.header.size():]
+
 		super(ControlPacket, self).unpack_from(bufferio)
 
 	# Control packet types
@@ -186,8 +185,8 @@ class HandshakePacket(ControlPacket):
 		if not self.sock_addr:
 				self.sock_addr = b''
 
-	def unpack_from(self, bufferio):
-		super(HandshakePacket, self).unpack_from(bufferio)
+	def unpack_from(self, bufferio, with_header=False):
+		super(HandshakePacket, self).unpack_from(bufferio, with_header)
 		t = self.sock_addr.find('\0')
 		if t >= 0:
 			self.sock_addr = self.sock_addr[:t]

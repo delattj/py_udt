@@ -25,11 +25,10 @@ class UDTServer(udt.udpserver.UDPServer):
 				hd_buff = client.get_bytes(handshake_size)
 				if hd_buff:
 					p = udt.udtsocket.HandshakePacket(hd_buff, header=h)
-					print "! %s"% p
+					print "!", p
 					p.req_type = 1
 					p.header.dst_sock_id = p.sock_id
-					bufferio = udt.udtsocket.BytesIO(handshake_size+header_size)
-					p.pack_into(bufferio)
+					bufferio = p.pack()
 					# print udt.udtsocket.HandshakePacket(bufferio)
 					client.send(bufferio)
 
