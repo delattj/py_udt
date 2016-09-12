@@ -59,7 +59,6 @@ class UDPServer(object):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self._state = None
-		self._read_callback = None # ????
 		self.ioloop = ioloop or IOLoop.instance()
 		self.port = None
 		self.clients = {}
