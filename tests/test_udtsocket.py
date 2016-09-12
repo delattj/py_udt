@@ -56,6 +56,7 @@ class UDTServer(udt.udpserver.UDPServer):
 			p = udt.udtsocket.HandshakePacket(hd_buff, header=header)
 			print "!", p
 
+			if p.header.dst_sock_id == 0:
 				p.header.dst_sock_id = p.sock_id
 				p.syn_cookie = 111 # client.syn_cookie
 				bufferio = p.pack()

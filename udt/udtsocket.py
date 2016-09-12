@@ -97,11 +97,13 @@ class UDTSocket(object):
 		self._recv(b)
 		p = HandshakePacket(b)
 		print "@ %s"% p
-		print "Response type: %s"% p.req_type
-		p.header.dst_sock_id = p.sock_id
-		p.req_type = -1
-		p.pack_into(b)
-		self._send(b.read())
+		if p.req_type == 1:
+			print "^ Handshake response"
+			# print "$", p.header.dst_sock_id
+			# p.header.dst_sock_id = p.sock_id
+			p.req_type = -1
+			p.pack_into(b)
+			self._send(b.read())
 
 # def server():
 # 	import socket
