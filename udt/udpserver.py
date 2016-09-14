@@ -15,12 +15,13 @@ if hasattr(errno, "WSAEWOULDBLOCK"):
     _ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)
 
 class UDPClient(object):
-	def __init__(self, addr, window_size, sendto):
+	def __init__(self, server, addr, window_size):
 		self.addr = addr
 		self._inbound_packet = deque(maxlen=window_size)
 		self.inbound_bytes = 0
 		self.handshaked = False
-		self._sendto = sendto
+		self._server = server
+		self._sendto = server._send
 
 	def send(self, bufferio):
 		self._sendto(bufferio, self.addr)
@@ -53,13 +54,17 @@ class UDPClient(object):
 
 			return bufferio
 
+	def close(self):
+		self._server.shutdown(self)
+		del self._server[self.addr]
+
 class UDPServer(object):
-	def __init__(self, ip_version=AF_INET, ioloop=None,
+	def __init__(self, ip_version=AF_INET, io_loop=None,
 		max_pkt_size=1500, window_size=25600):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self._state = None
-		self.ioloop = ioloop or IOLoop.instance()
+		self.io_loop = io_loop or IOLoop.instance()
 		self.port = None
 		self.clients = {}
 		self._outbound_packet = deque(maxlen=window_size)
@@ -71,7 +76,7 @@ class UDPServer(object):
 		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		self.socket.setblocking(0)
 		self.socket.bind(('', port))
-		self._add_io_state(self.ioloop.READ)
+		self._add_io_state(self.io_loop.READ)
 
 	def start(self):
 		IOLoop.instance().start()
@@ -79,24 +84,24 @@ class UDPServer(object):
 	def _add_io_state(self, state):
 		if self._state is None:
 			self._state = IOLoop.ERROR | state
-			self.ioloop.add_handler(
+			self.io_loop.add_handler(
 				self.socket.fileno(), self._handle_events, self._state
 			)
 
 		elif not self._state & state:
 			self._state = self._state | state
-			self.ioloop.update_handler(self.socket.fileno(), self._state)
+			self.io_loop.update_handler(self.socket.fileno(), self._state)
 
 	def _remove_io_state(self, state):
 		if self._state is not None and self._state & state:
 			self._state ^= state
-			self.ioloop.update_handler(self.socket.fileno(), self._state)
+			self.io_loop.update_handler(self.socket.fileno(), self._state)
 
 	def closed(self):
 		return self.socket is None
 
 	def close(self):
-		self.ioloop.remove_handler(self.socket.fileno())
+		self.io_loop.remove_handler(self.socket.fileno())
 		self.socket.shutdown(socket.SHUT_RDWR)
 		self.socket.close()
 		self.socket = None
@@ -106,7 +111,7 @@ class UDPServer(object):
 			c = self.clients[addr]
 
 		else:
-			c = UDPClient(addr, self.window_size, self._send)
+			c = UDPClient(self, addr, self.window_size)
 			self.clients[addr] = c
 
 		return c
@@ -134,12 +139,11 @@ class UDPServer(object):
 
 		for c in clients:
 			# Wake up client socket
-			# TODO: queue it in a callback ???
-			self.handle_packet(c)
+			self.io_loop.spawn_callback(self.handle_packet, c)
 
 	def _send(self, bufferio, addr):
 		self._outbound_packet.append((bufferio, addr))
-		self._add_io_state(self.ioloop.WRITE)
+		self._add_io_state(self.io_loop.WRITE)
 
 	def _handle_write(self):
 		try:
@@ -151,7 +155,7 @@ class UDPServer(object):
 
 				self._outbound_packet.popleft()
 
-			self._remove_io_state(self.ioloop.WRITE)
+			self._remove_io_state(self.io_loop.WRITE)
 
 		except: # retry later
 			pass
@@ -160,16 +164,21 @@ class UDPServer(object):
 		if self.closed():
 			return
 
-		if events & self.ioloop.READ:
+		if events & self.io_loop.READ:
 			self._handle_read()
 
-		if events & self.ioloop.WRITE:
+		if events & self.io_loop.WRITE:
 			self._handle_write()
 
-		if events & self.ioloop.ERROR:
+		if events & self.io_loop.ERROR:
 			print ('ERROR Event in %s' % self)
 
 	def handle_packet(self, client):
 		'''Handle incoming packets here'''
+
+		raise NotImplemented
+
+	def shutdown(self, client):
+		'''Shutdown connection to client'''
 
 		raise NotImplemented

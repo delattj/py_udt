@@ -1,6 +1,11 @@
 import socket
+from .udpserver import *
 from .packet import *
 from .buffer import *
+
+from tornado.gen import coroutine, Return, Future
+from tornado.iostream import IOStream
+
 
 UDT_VER = 4
 MAX_PKT_SIZE = 1500
@@ -15,12 +20,14 @@ TCP = STREAM
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
-class UDTSocket(object):
-	def __init__(self, host, port, s_type=DGRAM, ip_version=AF_INET):
+### Client
+
+class UDTSocket(IOStream):
+	def __init__(self, host, port, s_type=DGRAM, ip_version=AF_INET, io_loop=None):
 		self.sock_type = s_type
 		s_type = socket.SOCK_STREAM if s_type == TCP else socket.SOCK_DGRAM
-		self._socket = socket.socket(ip_version, s_type)
-		self._socket.setblocking(0)
+		s = socket.socket(ip_version, s_type)
+		super(UDTSocket, self).__init__(s, io_loop=io_loop)
 		self.host = host
 		self.port = port
 
@@ -43,40 +50,36 @@ class UDTSocket(object):
 
 		self.udt_ver = UDT_VER
 
+		self.handshaked = False
+
 	def set_reuse_addr(self):
-		self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 	def connect(self):
 		if self.reuse_addr:
 			self.set_reuse_addr()
 
-		self._socket.connect((self.host, self.port))
+		f = Future()
+		def on_connect(f_c):
+			if f_c.exception():
+				f.set_exc_info(f_c._exc_info)
+				return
 
-	def listen(self):
-		if self.reuse_addr:
-			self.set_reuse_addr()
+			h_future = self.handshake()
+			def on_handshake(f_h):
+				if f_h.exception():
+					f.set_exc_info(f_h._exc_info)
+					return
+				f.set_result(f_h.result())
 
-		self._socket.bind((self.host, self.port))
+			self.io_loop.add_future(h_future, on_handshake)
 
-	def _send(self, data):
-		return self._socket.sendall(data)
+		f_connect = super(UDTSocket, self).connect((self.host, self.port))
+		self.io_loop.add_future(f_connect, on_connect)
+			
+		return f
 
-	def _recv(self, bufferio):
-		while 1:
-			d = None
-			try:
-				d = self._socket.recv(self.mss)
-
-			except:
-				pass
-
-			if d is None: break
-			if d:
-				bufferio.write(d)
-
-	def close(self):
-		self._socket.close()
-
+	@coroutine
 	def handshake(self):
 		p = HandshakePacket(
 			req_type=1,
@@ -87,14 +90,14 @@ class UDTSocket(object):
 			max_flow_win_size=self.flight_flag_size,
 			sock_id=1, # rand value?
 			syn_cookie=0,
-			sock_addr=self._socket.getpeername()[0]
+			sock_addr=self.socket.getpeername()[0]
 		)
-		# b = BytesIO(self.mss)
 		b = p.pack()
-		self._send(b.read())
-
+		self.write(str(b.read()))
 		b.set_length(0)
-		self._recv(b)
+
+		data = yield self.read_bytes(ControlHeader.size())
+		b.write(data)
 		p = HandshakePacket(b)
 		print "@ %s"% p
 		if p.req_type == 1:
@@ -103,16 +106,80 @@ class UDTSocket(object):
 			# p.header.dst_sock_id = p.sock_id
 			p.req_type = -1
 			p.pack_into(b)
-			self._send(b.read())
+			self.write(str(b.read()))
+			self.handshaked = True
 
-# def server():
-# 	import socket
+		raise Return(self.handshaked)
 
-# 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-# 	s.bind(('', 47008))
-# 	while 1:
-# 		(d, addr) = s.recvfrom(1024)
-# 		if not d: break
-# 		print "Recieved from "+ str(addr)
-# 		print "###", len(d)
-# 	s.close()
+
+### Server
+
+def _retry_onfail(handler):
+	def _fnc(s, client, *args):
+		if not handler(s, client, *args):
+			client._packet_handler = (handler, args)
+			return 0
+
+		client._packet_handler = None
+		return 1
+
+	return _fnc
+
+class UDTServer(UDPServer):
+
+	def handle_packet(self, client):
+		if hasattr(client, '_packet_handler')\
+				and client._packet_handler is not None:
+			# resume after running out of bytes
+			handler, args = client._packet_handler
+			if not handler(self, client, *args):
+				return
+
+		while 1:
+			header_size = ControlHeader.size()
+			h_buff = client.get_bytes(header_size)
+			if h_buff is None:
+				break # Not enough bytes to shew
+
+			if bit_flag_from_byte(h_buff[0]):
+				# Control packet
+
+				h = ControlHeader(h_buff)
+
+				c_handler = self.control_handler.get(h.get_msg_type(),
+					lambda *a:1)
+				if not c_handler(self, client, h):
+					break
+
+			else:
+				# Data Packet
+				pass
+
+	@_retry_onfail
+	def handle_handshake(self, client, header):
+		handshake_size = HandshakePacket.size()
+
+		hd_buff = client.get_bytes(handshake_size)
+		if hd_buff:
+			p = HandshakePacket(hd_buff, header=header)
+			print "!", p
+
+			if p.header.dst_sock_id == 0:
+				p.header.dst_sock_id = p.sock_id
+				p.syn_cookie = 111 # client.syn_cookie
+				bufferio = p.pack()
+				client.send(bufferio)
+
+			elif p.req_type > 0:
+				print "> Acknowledge handshake"
+
+			elif p.syn_cookie == 111: # client.syn_cookie
+				self.handshake = True
+				print "> Handshake accepted"
+
+			return 1
+
+	control_handler = {
+		ControlPacket.handshake: handle_handshake
+	}
+
