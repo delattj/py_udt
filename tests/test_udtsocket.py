@@ -3,9 +3,9 @@ sys.path.append('..')
 import udt.udtsocket
 
 # from threading import Thread
-from time import sleep
+# from time import sleep
 
-from tornado.gen import coroutine
+from tornado.gen import coroutine, sleep
 
 
 c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
@@ -14,6 +14,7 @@ c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
 def connect():
 	try:
 		r = yield c.connect()
+		# yield sleep(1)
 
 	finally:
 		c.io_loop.stop()

@@ -3,7 +3,7 @@ from .udpserver import *
 from .packet import *
 from .buffer import *
 
-from tornado.gen import coroutine, Return, Future
+from tornado.gen import coroutine, Return
 from tornado.iostream import IOStream
 
 
@@ -55,29 +55,25 @@ class UDTSocket(IOStream):
 	def set_reuse_addr(self):
 		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
+	@coroutine
 	def connect(self):
 		if self.reuse_addr:
 			self.set_reuse_addr()
 
-		f = Future()
-		def on_connect(f_c):
-			if f_c.exception():
-				f.set_exc_info(f_c._exc_info)
-				return
+		yield super(UDTSocket, self).connect((self.host, self.port))
 
-			h_future = self.handshake()
-			def on_handshake(f_h):
-				if f_h.exception():
-					f.set_exc_info(f_h._exc_info)
-					return
-				f.set_result(f_h.result())
+		h = yield self.handshake()
+		raise Return(h)
 
-			self.io_loop.add_future(h_future, on_handshake)
+	@coroutine
+	def get_bytes(self, n_bytes):
+		data = yield self.read_bytes(n_bytes)
+		b = BytesIO(len(data))
+		b.write(data)
+		raise Return(b)
 
-		f_connect = super(UDTSocket, self).connect((self.host, self.port))
-		self.io_loop.add_future(f_connect, on_connect)
-			
-		return f
+	def send(self, bufferio):
+		return super(UDTSocket, self).write(str(bufferio))
 
 	@coroutine
 	def handshake(self):
@@ -93,20 +89,26 @@ class UDTSocket(IOStream):
 			sock_addr=self.socket.getpeername()[0]
 		)
 		b = p.pack()
-		self.write(str(b.read()))
-		b.set_length(0)
+		self.send(b)
 
-		data = yield self.read_bytes(ControlHeader.size())
-		b.write(data)
-		p = HandshakePacket(b)
+		b = yield self.get_bytes(ControlHeader.size())
+		if not bit_flag_from_byte(b[0]):
+			raise Return(False)
+
+		h = ControlHeader(b)
+		if h.get_msg_type() != ControlPacket.handshake:
+			raise Return(False)
+
+		b = yield self.get_bytes(HandshakePacket.size())
+		p = HandshakePacket(b, header=h)
 		print "@ %s"% p
 		if p.req_type == 1:
 			print "^ Handshake response"
 			# print "$", p.header.dst_sock_id
 			# p.header.dst_sock_id = p.sock_id
 			p.req_type = -1
-			p.pack_into(b)
-			self.write(str(b.read()))
+			b = p.pack()
+			self.send(b)
 			self.handshaked = True
 
 		raise Return(self.handshaked)
@@ -114,32 +116,13 @@ class UDTSocket(IOStream):
 
 ### Server
 
-def _retry_onfail(handler):
-	def _fnc(s, client, *args):
-		if not handler(s, client, *args):
-			client._packet_handler = (handler, args)
-			return 0
-
-		client._packet_handler = None
-		return 1
-
-	return _fnc
-
 class UDTServer(UDPServer):
 
-	def handle_packet(self, client):
-		if hasattr(client, '_packet_handler')\
-				and client._packet_handler is not None:
-			# resume after running out of bytes
-			handler, args = client._packet_handler
-			if not handler(self, client, *args):
-				return
-
+	@coroutine
+	def accept(self, client):
 		while 1:
 			header_size = ControlHeader.size()
-			h_buff = client.get_bytes(header_size)
-			if h_buff is None:
-				break # Not enough bytes to shew
+			h_buff = yield client.get_bytes(header_size)
 
 			if bit_flag_from_byte(h_buff[0]):
 				# Control packet
@@ -148,38 +131,37 @@ class UDTServer(UDPServer):
 
 				c_handler = self.control_handler.get(h.get_msg_type(),
 					lambda *a:1)
-				if not c_handler(self, client, h):
-					break
+				yield c_handler(self, client, h)
 
 			else:
 				# Data Packet
 				pass
 
-	@_retry_onfail
+	@coroutine
 	def handle_handshake(self, client, header):
 		handshake_size = HandshakePacket.size()
 
-		hd_buff = client.get_bytes(handshake_size)
-		if hd_buff:
-			p = HandshakePacket(hd_buff, header=header)
-			print "!", p
+		hd_buff = yield client.get_bytes(handshake_size)
+		p = HandshakePacket(hd_buff, header=header)
+		print "!", p
 
-			if p.header.dst_sock_id == 0:
-				p.header.dst_sock_id = p.sock_id
-				p.syn_cookie = 111 # client.syn_cookie
-				bufferio = p.pack()
-				client.send(bufferio)
+		if p.header.dst_sock_id == 0:
+			p.header.dst_sock_id = p.sock_id
+			p.syn_cookie = 111 # client.syn_cookie
+			bufferio = p.pack()
+			client.send(bufferio)
 
-			elif p.req_type > 0:
-				print "> Acknowledge handshake"
+		elif p.req_type > 0:
+			print "> Acknowledge handshake"
 
-			elif p.syn_cookie == 111: # client.syn_cookie
-				self.handshake = True
-				print "> Handshake accepted"
-
-			return 1
+		elif p.syn_cookie == 111: # client.syn_cookie
+			self.handshake = True
+			print "> Handshake accepted"
 
 	control_handler = {
 		ControlPacket.handshake: handle_handshake
 	}
 
+	def shutdown(self, client):
+		# send shutdown
+		pass
