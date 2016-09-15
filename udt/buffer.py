@@ -44,3 +44,8 @@ class BytesIO(bytearray):
 	def tell(self):
 		return self._w_offset
 
+	def extend(self, bytesa):
+		super(BytesIO, self).extend(bytesa)
+		self.size += len(bytesa)
+		self._w_offset = self.size
+

@@ -126,6 +126,7 @@ class UDTSocket(IOStream):
 	# Override IOStream method to support BytesIO
 	def read_from_fd(self):
 		b = BytesIO(self.mss)
+		n = 0
 		try:
 			n = self.socket.recv_into(b, self.mss)
 			b.set_length(n)
@@ -136,7 +137,7 @@ class UDTSocket(IOStream):
 			else:
 				raise
 
-		if not b:
+		if not n:
 			self.close()
 			return None
 
@@ -214,20 +215,12 @@ def _merge_prefix(deque, size):
 		remaining -= len(chunk)
 
 	if prefix:
+		b = prefix[0]
 		if len(prefix) > 1:
-			b_size = size - remaining
-			b = BytesIO(b_size)
-			for x in prefix:
+			for x in prefix[1:]:
 				b.extend(x)
-			b.set_length(b_size)
-
-		else:
-			b = prefix[0]
 
 		deque.appendleft(b)
-
-	if not deque:
-		deque.appendleft(b"")
 
 import tornado.iostream
 tornado.iostream._merge_prefix = _merge_prefix
