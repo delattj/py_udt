@@ -19,7 +19,6 @@ class UDPClient(object):
 		self.addr = addr
 		self._inbound_packet = deque(maxlen=window_size)
 		self.inbound_bytes = 0
-		self.handshaked = False
 		self.shutdown = False
 		self._server = server
 		self._sendto = server._send
@@ -94,7 +93,7 @@ class UDPClient(object):
 		return self.shutdown
 
 	def close(self):
-		self._server.shutdown(self)
+		self._server.on_close(self)
 		self._shutdown_get_bytes()
 		del self._server.clients[self.addr]
 		self.shutdown = True
@@ -156,7 +155,7 @@ class UDPServer(object):
 		else:
 			c = UDPClient(self, addr, self.window_size)
 			self.clients[addr] = c
-			self.io_loop.spawn_callback(self.accept, c)
+			self.io_loop.spawn_callback(self.on_accept, c)
 
 		return c
 
@@ -218,12 +217,12 @@ class UDPServer(object):
 		if events & self.io_loop.ERROR:
 			print ('ERROR Event in %s' % self)
 
-	def accept(self, client):
+	def on_accept(self, client):
 		'''Handle incoming packets here'''
 
 		raise NotImplemented
 
-	def shutdown(self, client):
+	def on_close(self, client):
 		'''Shutdown connection to client'''
 
 		raise NotImplemented
