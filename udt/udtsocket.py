@@ -3,8 +3,8 @@ import socket
 from .udpserver import *
 from .packet import *
 
-from tornado.gen import coroutine, Return, TracebackFuture
-from tornado.iostream import IOStream, _ERRNO_WOULDBLOCK
+from tornado.gen import coroutine, Return, sleep
+from tornado.iostream import IOStream
 
 
 UDT_VER = 4
@@ -30,12 +30,12 @@ class BaseUDTSocket:
 	def _handle_packet(self, client):
 		while 1:
 			header_size = ControlHeader.size()
-			h_buff = yield client.get_bytes(header_size)
+			h_data = yield client.get_bytes(header_size)
 
-			if bit_flag_from_byte(h_buff[0]):
+			if bit_flag_from_byte(h_data[0]):
 				# Control packet
 
-				h = ControlHeader(h_buff)
+				h = ControlHeader(h_data)
 
 				c_handler = self.control_handler.get(h.get_msg_type(),
 					lambda *a:1)
@@ -49,8 +49,8 @@ class BaseUDTSocket:
 	def _handle_handshake(self, client, header):
 		handshake_size = HandshakePacket.size()
 
-		hd_buff = yield client.get_bytes(handshake_size)
-		p = HandshakePacket(hd_buff, header=header)
+		data = yield client.get_bytes(handshake_size)
+		p = HandshakePacket(data, header=header)
 		print "!", p
 
 		if p.header.dst_sock_id == 0:
@@ -58,8 +58,13 @@ class BaseUDTSocket:
 			p.syn_cookie = 111 # client.syn_cookie
 			data = p.pack()
 			client.send(data)
+			print "> Initiate handshake"
 
 		elif p.req_type > 0:
+			p.req_type = -1
+			data = p.pack()
+			self.send(data)
+			self.handshaked = True
 			print "> Acknowledge handshake"
 
 		elif p.syn_cookie == 111: # client.syn_cookie
@@ -74,7 +79,7 @@ class BaseUDTSocket:
 
 ### Client
 
-class UDTSocket(IOStream):
+class UDTSocket(BaseUDTSocket, IOStream):
 	def __init__(self, host, port, s_type=DGRAM, ip_version=AF_INET, io_loop=None):
 		self.sock_type = s_type
 		s_type = socket.SOCK_STREAM if s_type == TCP else socket.SOCK_DGRAM
@@ -102,8 +107,6 @@ class UDTSocket(IOStream):
 
 		self.udt_ver = UDT_VER
 
-		self.handshaked = False
-
 	def set_reuse_addr(self):
 		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -114,16 +117,17 @@ class UDTSocket(IOStream):
 
 		yield super(UDTSocket, self).connect((self.host, self.port))
 
+		# Start packet deserialization loop
+		self._handle_packet(self)
+
 		h = yield self.handshake()
 		raise Return(h)
 
-	@coroutine
 	def get_bytes(self, n_bytes):
-		b = yield self.read_bytes(n_bytes)
-		raise Return(b)
+		return self.read_bytes(n_bytes)
 
 	def send(self, data):
-		self.write(data)
+		return self.write(data)
 
 	@coroutine
 	def handshake(self):
@@ -139,27 +143,14 @@ class UDTSocket(IOStream):
 			sock_addr=self.socket.getpeername()[0]
 		)
 		b = p.pack()
-		self.send(b)
 
-		b = yield self.get_bytes(ControlHeader.size())
-		if not bit_flag_from_byte(b[0]):
-			raise Return(False)
-
-		h = ControlHeader(b)
-		if h.get_msg_type() != ControlPacket.handshake:
-			raise Return(False)
-
-		b = yield self.get_bytes(HandshakePacket.size())
-		p = HandshakePacket(b, header=h)
-		print "@ %s"% p
-		if p.req_type == 1:
-			print "^ Handshake response"
-			# print "$", p.header.dst_sock_id
-			# p.header.dst_sock_id = p.sock_id
-			p.req_type = -1
-			b = p.pack()
+		for i in xrange(16):
 			self.send(b)
-			self.handshaked = True
+			print "^ Send handshake"
+
+			yield sleep(6)
+			if self.handshaked:
+				break
 
 		raise Return(self.handshaked)
 

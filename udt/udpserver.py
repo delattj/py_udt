@@ -22,9 +22,9 @@ class ToPack(object):
 		yield self.addr
 
 class UDPClient(object):
-	def __init__(self, server, addr, window_size):
+	def __init__(self, server, addr, flight_flag_size):
 		self.addr = addr
-		self._inbound_packet = deque(maxlen=window_size)
+		self._inbound_packet = deque(maxlen=flight_flag_size)
 		self.inbound_bytes = 0
 		self.shutdown = False
 		self._server = server
@@ -115,8 +115,8 @@ class UDPServer(object):
 		self.port = None
 		self.clients = {}
 		self._outbound_packet = deque(maxlen=window_size)
-		self.window_size = window_size
-		self.max_pkt_size = max_pkt_size
+		self.flight_flag_size = window_size
+		self.mss = max_pkt_size
 
 	def bind(self, port):
 		self.port = port
@@ -160,7 +160,7 @@ class UDPServer(object):
 			c = self.clients[addr]
 
 		else:
-			c = UDPClient(self, addr, self.window_size)
+			c = UDPClient(self, addr, self.flight_flag_size)
 			self.clients[addr] = c
 			self.io_loop.spawn_callback(self.on_accept, c)
 
@@ -172,7 +172,7 @@ class UDPServer(object):
 		while 1:
 
 			try:
-				b, addr = self.socket.recvfrom(self.max_pkt_size)
+				b, addr = self.socket.recvfrom(self.mss)
 
 			except:
 				break # retry later
@@ -187,7 +187,6 @@ class UDPServer(object):
 		for c in clients:
 			# Wake up client socket
 			c._wake_get_bytes()
-			# self.io_loop.spawn_callback(self.handle_packet, c)
 
 	def _send(self, data, addr):
 		self._outbound_packet.append(ToPack(data, addr))
