@@ -2,7 +2,6 @@ import errno
 import socket
 from .udpserver import *
 from .packet import *
-from .buffer import *
 
 from tornado.gen import coroutine, Return, TracebackFuture
 from tornado.iostream import IOStream, _ERRNO_WOULDBLOCK
@@ -57,8 +56,8 @@ class BaseUDTSocket:
 		if p.header.dst_sock_id == 0:
 			p.header.dst_sock_id = p.sock_id
 			p.syn_cookie = 111 # client.syn_cookie
-			bufferio = p.pack()
-			client.send(bufferio)
+			data = p.pack()
+			client.send(data)
 
 		elif p.req_type > 0:
 			print "> Acknowledge handshake"
@@ -123,41 +122,8 @@ class UDTSocket(IOStream):
 		b = yield self.read_bytes(n_bytes)
 		raise Return(b)
 
-	# Override IOStream method to support BytesIO
-	def read_from_fd(self):
-		b = BytesIO(self.mss)
-		n = 0
-		try:
-			n = self.socket.recv_into(b, self.mss)
-			b.set_length(n)
-
-		except socket.error as e:
-			if e.args[0] in _ERRNO_WOULDBLOCK:
-				return None
-			else:
-				raise
-
-		if not n:
-			self.close()
-			return None
-
-		return b.read()
-
-	# Override IOStream method to support BytesIO
-	def write(self, bufferio):
-		self._check_closed()
-		if bufferio:
-			self._write_buffer.append(bufferio)
-			self._write_buffer_size += len(bufferio)
-		future = self._write_future = TracebackFuture()
-		future.add_done_callback(lambda f: f.exception())
-		if not self._connecting:
-			self._handle_write()
-			if self._write_buffer:
-				self._add_io_state(self.io_loop.WRITE)
-			self._maybe_add_error_listener()
-		return future
-	send = write
+	def send(self, data):
+		self.write(data)
 
 	@coroutine
 	def handshake(self):
@@ -196,34 +162,6 @@ class UDTSocket(IOStream):
 			self.handshaked = True
 
 		raise Return(self.handshaked)
-
-# Hot patching tornado.iostream
-def _merge_prefix(deque, size):
-	if len(deque) == 1 and len(deque[0]) <= size:
-		return
-
-	prefix = []
-	remaining = size
-
-	while deque and remaining > 0:
-		chunk = deque.popleft()
-		if len(chunk) > remaining:
-			deque.appendleft(chunk[remaining:])
-			chunk = chunk[:remaining]
-
-		prefix.append(chunk)
-		remaining -= len(chunk)
-
-	if prefix:
-		b = prefix[0]
-		if len(prefix) > 1:
-			for x in prefix[1:]:
-				b.extend(x)
-
-		deque.appendleft(b)
-
-import tornado.iostream
-tornado.iostream._merge_prefix = _merge_prefix
 
 ### Server
 

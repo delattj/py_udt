@@ -1,11 +1,8 @@
-import errno
 import socket
 from collections import deque
 
 from tornado.ioloop import IOLoop
 from tornado.gen import coroutine, Return, Future
-
-from .buffer import BytesIO
 
 # IP version
 AF_INET = socket.AF_INET
@@ -13,6 +10,16 @@ AF_INET6 = socket.AF_INET6
 
 class Shutdown(Exception):
 	pass
+
+class ToPack(object):
+	__slots__ = ('data', 'addr')
+	def __init__(self, data, addr):
+		self.data = data
+		self.addr = addr
+
+	def __iter__(self):
+		yield self.data
+		yield self.addr
 
 class UDPClient(object):
 	def __init__(self, server, addr, window_size):
@@ -26,8 +33,8 @@ class UDPClient(object):
 		self._waiting_bytes = None
 		self._need_bytes = 0
 
-	def send(self, bufferio):
-		self._sendto(bufferio, self.addr)
+	def send(self, data):
+		self._sendto(data, self.addr)
 
 	def has_bytes(self):
 		return self.inbound_bytes > 0
@@ -52,23 +59,23 @@ class UDPClient(object):
 				raise Shutdown()
 
 		self.inbound_bytes -= n
-		bufferio = BytesIO(n)
 
+		data = ""
+		inbound = self._inbound_packet
 		while n:
-			b = self._inbound_packet[0]
+			b = inbound[0]
 			b_length = len(b)
-			acquired = min(b_length, n)
-			bufferio.write(b[:acquired])
-
 			if n >= b_length:
-				self._inbound_packet.popleft()
+				data += b
+				inbound.popleft()
+				n -= b_length
 
 			else:
-				b[:] = b[n:]
+				data += b[:n]
+				inbound[0] = b[n:]
+				break
 
-			n -= acquired
-
-		raise Return(bufferio)
+		raise Return(data)
 
 	def _wake_get_bytes(self):
 		if self._waiting_bytes is None:
@@ -161,41 +168,45 @@ class UDPServer(object):
 
 	def _handle_read(self):
 		clients = set() # keep track of delivered clients
-		b = BytesIO(self.max_pkt_size)
 
 		while 1:
-			n = 0
 
 			try:
-				n, addr = self.socket.recvfrom_into(b, self.max_pkt_size)
-				b.set_length(n)
+				b, addr = self.socket.recvfrom(self.max_pkt_size)
 
 			except:
 				break # retry later
 
-			if not n:
+			if not b:
 				continue
 
 			c = self._get_client(addr)
 			clients.add(c)
-			c.push_bytes(b.read())
+			c.push_bytes(b)
 
 		for c in clients:
 			# Wake up client socket
 			c._wake_get_bytes()
 			# self.io_loop.spawn_callback(self.handle_packet, c)
 
-	def _send(self, bufferio, addr):
-		self._outbound_packet.append((bufferio, addr))
+	def _send(self, data, addr):
+		self._outbound_packet.append(ToPack(data, addr))
 		self._add_io_state(self.io_loop.WRITE)
 
 	def _handle_write(self):
 		try:
 			while self._outbound_packet:
-				b, addr = self._outbound_packet[0]
-				while b:
+				packet = self._outbound_packet[0]
+				b, addr = packet
+				b_length = len(b)
+				while b_length:
 					n = self.socket.sendto(b, addr)
-					b[:] = b[n:]
+					if n == b_length:
+						break
+
+					b = b[n:]
+					packet.data = b
+					b_length -= n
 
 				self._outbound_packet.popleft()
 
