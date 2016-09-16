@@ -11,16 +11,6 @@ AF_INET6 = socket.AF_INET6
 class Shutdown(Exception):
 	pass
 
-class ToPack(object):
-	__slots__ = ('data', 'addr')
-	def __init__(self, data, addr):
-		self.data = data
-		self.addr = addr
-
-	def __iter__(self):
-		yield self.data
-		yield self.addr
-
 class UDPClient(object):
 	def __init__(self, server, addr, flight_flag_size):
 		self.addr = addr
@@ -189,14 +179,14 @@ class UDPServer(object):
 			c._wake_get_bytes()
 
 	def _send(self, data, addr):
-		self._outbound_packet.append(ToPack(data, addr))
+		self._outbound_packet.append((data, addr))
 		self._add_io_state(self.io_loop.WRITE)
 
 	def _handle_write(self):
+		outbound = self._outbound_packet
 		try:
-			while self._outbound_packet:
-				packet = self._outbound_packet[0]
-				b, addr = packet
+			while outbound:
+				b, addr = outbound[0]
 				b_length = len(b)
 				while b_length:
 					n = self.socket.sendto(b, addr)
@@ -204,10 +194,10 @@ class UDPServer(object):
 						break
 
 					b = b[n:]
-					packet.data = b
+					outbound[0] = (b, addr)
 					b_length -= n
 
-				self._outbound_packet.popleft()
+				outbound.popleft()
 
 			self._remove_io_state(self.io_loop.WRITE)
 
