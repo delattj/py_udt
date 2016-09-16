@@ -144,15 +144,16 @@ class UDTSocket(BaseUDTSocket, IOStream):
 		)
 		b = p.pack()
 
-		for i in xrange(16):
+		for i in xrange(10):
 			self.send(b)
 			print "^ Send handshake"
 
-			yield sleep(6)
-			if self.handshaked:
-				break
+			for u in xrange(12):
+				yield sleep(.5)
+				if self.handshaked:
+					raise Return(True)
 
-		raise Return(self.handshaked)
+		raise Return(False)
 
 ### Server
 
