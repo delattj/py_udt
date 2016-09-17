@@ -1,5 +1,5 @@
-import errno
 import socket
+import random
 from .udpserver import *
 from .packet import *
 
@@ -19,6 +19,10 @@ TCP = STREAM
 # IP version
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
+
+#
+_srandom = random.SystemRandom().random
+random = lambda p: int(_srandom()*10**p)
 
 ### Base Class
 
@@ -55,7 +59,7 @@ class BaseUDTSocket:
 
 		if p.header.dst_sock_id == 0:
 			p.header.dst_sock_id = p.sock_id
-			p.syn_cookie = 111 # client.syn_cookie
+			p.syn_cookie = client.syn_cookie
 			data = p.pack()
 			client.send(data)
 			print "> Initiate handshake"
@@ -67,7 +71,7 @@ class BaseUDTSocket:
 			self.handshaked = True
 			print "> Acknowledge handshake"
 
-		elif p.syn_cookie == 111: # client.syn_cookie
+		elif p.syn_cookie == client.syn_cookie:
 			self.handshaked = True
 			print "> Handshake accepted"
 
@@ -89,23 +93,16 @@ class UDTSocket(BaseUDTSocket, IOStream):
 		self.port = port
 
 		self.mss = MAX_PKT_SIZE
-		self.sync_sending = True
-		self.sync_recving = True
 		self.flight_flag_size = 25600
-		self.snd_buff_size = 8192
-		self.rcv_buff_size = 8192 #rcv buffer MUST NOT be bigger than Flight Flag size
 		self.linger_onoff = 1
 		self.linger = 180
-		self.udp_snd_buff_size = 65536
-		self.udp_rcv_buff_size = self.rcv_buff_size * self.mss
 		self.ip_version = ip_version
-		self.rendezvous = False
 		self.snd_timeout = -1
 		self.rcv_timeout = -1
 		self.reuse_addr = True
 		self.max_bw = -1
-
 		self.udt_ver = UDT_VER
+		self.sock_id = random(6)
 
 	def set_reuse_addr(self):
 		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -135,10 +132,10 @@ class UDTSocket(BaseUDTSocket, IOStream):
 			req_type=1,
 			udt_ver=self.udt_ver,
 			sock_type=self.sock_type,
-			init_pkt_seq=0, # rand value?
+			init_pkt_seq=0,
 			max_pkt_size=self.mss,
 			max_flow_win_size=self.flight_flag_size,
-			sock_id=1, # rand value?
+			sock_id=self.sock_id,
 			syn_cookie=0,
 			sock_addr=self.socket.getpeername()[0]
 		)
@@ -160,6 +157,7 @@ class UDTSocket(BaseUDTSocket, IOStream):
 class UDTServer(BaseUDTSocket, UDPServer):
 
 	def on_accept(self, client):
+		client.syn_cookie = random(6)
 		self._handle_packet(client)
 
 	def on_close(self, client):
