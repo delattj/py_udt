@@ -2,9 +2,6 @@ import sys
 sys.path.append('..')
 import udt.udtsocket
 
-# from threading import Thread
-# from time import sleep
-
 from tornado.gen import coroutine, sleep
 
 
@@ -19,11 +16,13 @@ def connect():
 	finally:
 		c.io_loop.stop()
 		s.close()
+		pass
 
 
 s = udt.udtsocket.UDTServer()
 s.bind(47008)
 
-connect()
+# connect()
 
 s.start()
+# c.start()

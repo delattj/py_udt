@@ -1,103 +1,76 @@
 import socket
 from collections import deque
 
+from .udpclient import *
+from .udpclient import _ERRNO_WOULDBLOCK
+
 from tornado.ioloop import IOLoop
 from tornado.gen import coroutine, Return, Future
-
-# IP version
-AF_INET = socket.AF_INET
-AF_INET6 = socket.AF_INET6
-
-class Shutdown(Exception):
-	pass
 
 class UDPClient(object):
 	def __init__(self, server, addr, flight_flag_size):
 		self.addr = addr
 		self._inbound_packet = deque(maxlen=flight_flag_size)
-		self.inbound_bytes = 0
 		self.shutdown = False
 		self._server = server
-		self._sendto = server._send
+		self._writeto = server._write
 
-		self._waiting_bytes = None
-		self._need_bytes = 0
+		self._waiting_packet = None
 
-	def send(self, data):
-		self._sendto(data, self.addr)
+	def write(self, data):
+		self._writeto(data, self.addr)
 
-	def has_bytes(self):
-		return self.inbound_bytes > 0
+	def has_packet(self):
+		return bool(self._inbound_packet)
 
-	def push_bytes(self, b_bytes):
-		self._inbound_packet.append(b_bytes)
-		self.inbound_bytes += len(b_bytes)
+	def push_packet(self, packet):
+		self._inbound_packet.append(packet)
 
 	@coroutine
-	def get_bytes(self, n):
-		if not n:
-			return
+	def get_next_packet(self):
+		assert self._waiting_packet is None
 
-		assert self._waiting_bytes is None
-
-		if self.inbound_bytes < n:
-			self._need_bytes = n
+		if not self._inbound_packet:
 			f = Future()
-			self._waiting_bytes = f
+			self._waiting_packet = f
 			r = yield f
 			if not r:
 				raise Shutdown()
 
-		self.inbound_bytes -= n
+		b = self._inbound_packet.popleft()
 
-		data = ""
-		inbound = self._inbound_packet
-		while n:
-			b = inbound[0]
-			b_length = len(b)
-			if n >= b_length:
-				data += b
-				inbound.popleft()
-				n -= b_length
+		raise Return(b)
 
-			else:
-				data += b[:n]
-				inbound[0] = b[n:]
-				break
-
-		raise Return(data)
-
-	def _wake_get_bytes(self):
-		if self._waiting_bytes is None:
+	def _wake_get_next_packet(self):
+		if self._waiting_packet is None:
 			return
 
-		if self.inbound_bytes < self._need_bytes:
+		if not self._inbound_packet:
 			return
 
-		self._waiting_bytes.set_result(1)
-		self._waiting_bytes = None
+		self._waiting_packet.set_result(1)
+		self._waiting_packet = None
 		self._need_bytes = 0
 
-	def _shutdown_get_bytes(self):
-		if self._waiting_bytes is None:
+	def _shutdown_get_next_packet(self):
+		if self._waiting_packet is None:
 			return
 
-		self._waiting_bytes.set_result(0)
-		self._waiting_bytes = None
-		self._need_bytes = 0
+		self._waiting_packet.set_result(0)
+		self._waiting_packet = None
 
 	def closed(self):
 		return self.shutdown
 
 	def close(self):
 		self._server.on_close(self)
-		self._shutdown_get_bytes()
+		self._shutdown_get_next_packet()
 		del self._server.clients[self.addr]
 		self.shutdown = True
 
 class UDPServer(object):
 	def __init__(self, ip_version=AF_INET, io_loop=None,
-		max_pkt_size=1500, window_size=25600):
+		mtu=1500, window_size=25600):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self._state = None
@@ -106,7 +79,7 @@ class UDPServer(object):
 		self.clients = {}
 		self._outbound_packet = deque(maxlen=window_size)
 		self.flight_flag_size = window_size
-		self.mss = max_pkt_size
+		self.mss = mtu - 28 # 28 -> IP header size
 
 	def bind(self, port):
 		self.port = port
@@ -164,21 +137,25 @@ class UDPServer(object):
 			try:
 				b, addr = self.socket.recvfrom(self.mss)
 
-			except:
-				break # retry later
+			except socket.error as e:
+				if e.args[0] in _ERRNO_WOULDBLOCK:
+					break # retry later
+
+				self.close()
+				raise
 
 			if not b:
 				continue
 
 			c = self._get_client(addr)
 			clients.add(c)
-			c.push_bytes(b)
+			c.push_packet(b)
 
 		for c in clients:
 			# Wake up client socket
-			c._wake_get_bytes()
+			c._wake_get_next_packet()
 
-	def _send(self, data, addr):
+	def _write(self, data, addr):
 		self._outbound_packet.append((data, addr))
 		self._add_io_state(self.io_loop.WRITE)
 
@@ -187,22 +164,17 @@ class UDPServer(object):
 		try:
 			while outbound:
 				b, addr = outbound[0]
-				b_length = len(b)
-				while b_length:
-					n = self.socket.sendto(b, addr)
-					if n == b_length:
-						break
-
-					b = b[n:]
-					outbound[0] = (b, addr)
-					b_length -= n
-
-				outbound.popleft()
+				self.socket.sendto(b, addr)
+				outbound.popleft() # remove only if it worked
 
 			self._remove_io_state(self.io_loop.WRITE)
 
-		except: # retry later
-			pass
+		except socket.error as e:
+			if e.args[0] in _ERRNO_WOULDBLOCK:
+				return # retry later
+
+			self._get_client(addr).close()
+			raise
 
 	def _handle_events(self, fd, events):
 		if self.closed():
@@ -218,7 +190,7 @@ class UDPServer(object):
 			print ('ERROR Event in %s' % self)
 
 	def on_accept(self, client):
-		'''Handle incoming packets here'''
+		'''On accept new client connection'''
 
 		raise NotImplemented
 
