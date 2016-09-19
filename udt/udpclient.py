@@ -11,7 +11,7 @@ from tornado.gen import coroutine, Return, Future
 AF_INET = socket.AF_INET
 AF_INET6 = socket.AF_INET6
 
-# More non-portable errnos:
+# Socket error numbers
 _ERRNO_INPROGRESS = (errno.EINPROGRESS,)
 if hasattr(errno, "WSAEINPROGRESS"):
 	_ERRNO_INPROGRESS += (errno.WSAEINPROGRESS,)
@@ -83,6 +83,9 @@ class UDPSocket(object):
 		return bool(self._inbound_packet)
 
 	def push_packet(self, packet):
+		if len(self._inbound_packet) >= self.flight_flag_size:
+			return # drop packet
+
 		self._inbound_packet.append(packet)
 
 	@coroutine
@@ -118,22 +121,20 @@ class UDPSocket(object):
 		self._waiting_packet = None
 
 	def _handle_read(self):
-		while 1:
+		try:
+			while 1:
 
-			try:
 				b = self.socket.recv(self.mss)
 
-			except socket.error as e:
-				if e.args[0] in _ERRNO_WOULDBLOCK:
-					break # retry later
+				if not b:
+					continue
 
+				self.push_packet(b)
+
+		except socket.error as e:
+			if e.args[0] not in _ERRNO_WOULDBLOCK:
 				self.close()
 				raise
-
-			if not b:
-				continue
-
-			self.push_packet(b)
 
 		self._wake_get_next_packet()
 
@@ -152,11 +153,9 @@ class UDPSocket(object):
 			self._remove_io_state(self.io_loop.WRITE)
 
 		except socket.error as e:
-			if e.args[0] in _ERRNO_WOULDBLOCK:
-				return # retry later
-
-			self.close()
-			raise
+			if e.args[0] not in _ERRNO_WOULDBLOCK:
+				self.close()
+				raise
 
 	def _handle_events(self, fd, events):
 		if self.closed():

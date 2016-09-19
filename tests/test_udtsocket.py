@@ -22,7 +22,7 @@ def connect():
 s = udt.udtsocket.UDTServer()
 s.bind(47008)
 
-# connect()
+connect()
 
 s.start()
 # c.start()

@@ -11,9 +11,10 @@ class UDPClient(object):
 	def __init__(self, server, addr, flight_flag_size):
 		self.addr = addr
 		self._inbound_packet = deque(maxlen=flight_flag_size)
+		self.flight_flag_size = flight_flag_size
 		self.shutdown = False
 		self._server = server
-		self._writeto = server._write
+		self._writeto = server._writeto
 
 		self._waiting_packet = None
 
@@ -24,6 +25,9 @@ class UDPClient(object):
 		return bool(self._inbound_packet)
 
 	def push_packet(self, packet):
+		if len(self._inbound_packet) >= self.flight_flag_size:
+			return # drop packet
+
 		self._inbound_packet.append(packet)
 
 	@coroutine
@@ -50,7 +54,6 @@ class UDPClient(object):
 
 		self._waiting_packet.set_result(1)
 		self._waiting_packet = None
-		self._need_bytes = 0
 
 	def _shutdown_get_next_packet(self):
 		if self._waiting_packet is None:
@@ -132,30 +135,28 @@ class UDPServer(object):
 	def _handle_read(self):
 		clients = set() # keep track of delivered clients
 
-		while 1:
+		try:
+			while 1:
 
-			try:
 				b, addr = self.socket.recvfrom(self.mss)
 
-			except socket.error as e:
-				if e.args[0] in _ERRNO_WOULDBLOCK:
-					break # retry later
+				if not b:
+					continue
 
+				c = self._get_client(addr)
+				clients.add(c)
+				c.push_packet(b)
+
+		except socket.error as e:
+			if e.args[0] not in _ERRNO_WOULDBLOCK:
 				self.close()
 				raise
-
-			if not b:
-				continue
-
-			c = self._get_client(addr)
-			clients.add(c)
-			c.push_packet(b)
 
 		for c in clients:
 			# Wake up client socket
 			c._wake_get_next_packet()
 
-	def _write(self, data, addr):
+	def _writeto(self, data, addr):
 		self._outbound_packet.append((data, addr))
 		self._add_io_state(self.io_loop.WRITE)
 
