@@ -3,8 +3,11 @@ import random
 from .udpclient import *
 from .udpserver import *
 from .packet import *
+from .sequence import *
 
-from tornado.gen import coroutine, Return, sleep
+from types import MethodType, FunctionType
+from tornado.gen import coroutine, sleep, Return, Future
+from tornado.locks import Event
 
 UDT_VER = 4
 MTU = 1500 # default ethernet settings
@@ -44,12 +47,22 @@ AF_INET6 = socket.AF_INET6
 _srandom = random.SystemRandom().random
 random = lambda p: int(_srandom()*10**p)
 
+def inlay(target, source):
+	'''Hot patch *target* instance with methods from *source* class'''
+	for method_name, method in source.__dict__.items():
+		if isinstance(method, FunctionType):
+			b_method = MethodType(method, target, target.__class__)
+			setattr(target, method_name, b_method)
+
+
 ### Base Class
+
+seq_keeper = SequenceKeeper(0x7FFFFFFF)
+ctrl_header_size = ControlHeader.size()
+data_header_size = DataPacket.size()
 
 class HandshakeTimeout(Exception):
 	pass
-
-ctrl_header_size = ControlHeader.size()
 
 class BaseUDTSocket:
 
@@ -73,14 +86,11 @@ class BaseUDTSocket:
 
 			else:
 				# Data Packet
-				self._handle_data(client, p_dataata)
+				self._handle_data(client, p_data)
 
 	def _handle_data(self, client, data_packed):
 		p = DataPacket(data_packed)
-		print "@", p.seq
-
-		# client.rcv_data[][] = p.data
-
+		client.push_data(p.seq, p.data)
 
 	def _handle_handshake(self, client, header, data):
 		p = HandshakePacket(data, header=header)
@@ -109,15 +119,82 @@ class BaseUDTSocket:
 		ControlPacket.handshake: _handle_handshake
 	}
 
+class DataQueue(object):
+
+	def initialize(self, window_size=25600):
+		self._rcv_data = DictSequence(window_size, seq_keeper)
+		self._sent_data = DictSequence(window_size, seq_keeper)
+		self._left_over = ""
+		self._data_event = Event()
+
+	def push_data(self, seq, data):
+		print "@", seq
+		last_no = self._rcv_data.last_read
+		next_no = seq_keeper.incr(last_no)
+
+		offset = seq_keeper.offset(next_no, seq)
+		if offset < 0:
+			return # drop that packet, we already received it.
+
+		self._rcv_data[seq] = data
+
+		if offset == 0:
+			self._data_event.set()
+			return
+
+		# data loss detection
+		len_next_seq = self._rcv_data.len_next_seq()
+		if offset > len_next_seq:
+			print "@ data lost", offset - len_next_seq
+
+		# Notify if we have a sequense of data that can be read
+		if len_next_seq > 0:
+			self._data_event.set()
+
+	@coroutine
+	def recv(self, max_len):
+		yield self._data_event.wait()
+		self._data_event.clear()
+
+		data = self._left_over
+		for d in self._rcv_data:
+			max_len -= len(d)
+			data += d
+			if max_len <= 0:
+				break
+
+		if max_len < 0:
+			self._left_over = data[max_len:]
+			data = data[:max_len]
+
+		else:
+			self._left_over = ""
+
+		raise Return(data)
+
+	def send(self, data):
+		length = len(data)
+		data_size = self.mss - data_header_size
+		n_packet = length / data_size + int(bool(length % data_size))
+		for n in xrange(n_packet):
+			p = DataPacket(
+				sock_id=self.sock_id,
+				data=data[n*data_size:(n+1)*data_size]
+			)
+			p.set_seq(self._sent_data.add(p))
+
+			self.write(p.pack())
 
 ### Client
 
-class UDTSocket(BaseUDTSocket, UDPSocket):
-	def __init__(self, host, port, ip_version=AF_INET, io_loop=None):
+class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
+	def __init__(self, host, port, ip_version=AF_INET, io_loop=None,
+		mtu=MTU, window_size=25600):
+
 		super(UDTSocket, self).__init__(host, port,
-			ip_version=ip_version, mtu=MTU,
-			io_loop=io_loop
+			ip_version, io_loop, mtu, window_size
 		)
+		self.initialize(window_size)
 
 		self.sock_type = DGRAM
 		self.ip_version = ip_version
@@ -170,13 +247,22 @@ class UDTSocket(BaseUDTSocket, UDPSocket):
 		# send shutdown
 		pass
 
-
 ### Server
 
 class UDTServer(BaseUDTSocket, UDPServer):
 
+	def __init__(self, ip_version=AF_INET, io_loop=None,
+		mtu=1500, window_size=25600):
+
+		super(UDTServer, self).__init__(ip_version, io_loop, mtu, window_size)
+
 	def on_accept(self, client):
 		client.syn_cookie = random(6)
+		client.mss = self.mss
+		
+		inlay(client, DataQueue)
+		client.initialize(self.flight_flag_size)
+
 		self._handle_packet(client)
 
 	def on_close(self, client):

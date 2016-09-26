@@ -8,10 +8,18 @@ from tornado.gen import coroutine, sleep
 c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
 
 @coroutine
-def connect():
+def test():
 	try:
 		r = yield c.connect()
-		# yield sleep(1)
+		s_client = s.clients.values()[0]
+
+		c.send("ABCDEFGHIJKLMNOP")
+		data = yield s_client.recv(16)
+		print data
+
+		s_client.send("ABCDEFGHIJKLMNOP")
+		data = yield c.recv(16)
+		print data
 
 	finally:
 		c.io_loop.stop()
@@ -22,7 +30,7 @@ def connect():
 s = udt.udtsocket.UDTServer()
 s.bind(47008)
 
-connect()
+test()
 
 s.start()
 # c.start()
