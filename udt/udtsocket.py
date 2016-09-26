@@ -66,8 +66,6 @@ class HandshakeTimeout(Exception):
 
 class BaseUDTSocket:
 
-	handshaked = False
-
 	@coroutine
 	def _handle_packet(self, client):
 		while 1:
@@ -84,7 +82,7 @@ class BaseUDTSocket:
 
 				c_handler(self, client, h, p_data[ctrl_header_size:])
 
-			else:
+			elif client.handshaked:
 				# Data Packet
 				self._handle_data(client, p_data)
 
@@ -108,11 +106,11 @@ class BaseUDTSocket:
 			p.req_type = -1
 			data = p.pack()
 			self.write(data)
-			self.handshaked = True
+			client.handshaked = True
 			print "> Acknowledge handshake"
 
 		elif p.syn_cookie == client.syn_cookie:
-			self.handshaked = True
+			client.handshaked = True
 			print "> Handshake accepted"
 
 	control_handler = {
@@ -154,6 +152,9 @@ class DataQueue(object):
 	@coroutine
 	def recv(self, max_len):
 		yield self._data_event.wait()
+		if self.closed():
+			raise Shutdown()
+
 		self._data_event.clear()
 
 		data = self._left_over
@@ -171,6 +172,15 @@ class DataQueue(object):
 			self._left_over = ""
 
 		raise Return(data)
+
+	@coroutine
+	def recv_stream(self):
+		yield self._data_event.wait()
+		if self.closed():
+			raise Shutdown()
+
+		self._data_event.clear()
+		raise Return(''.join(self._rcv_data))
 
 	def send(self, data):
 		length = len(data)
@@ -196,6 +206,7 @@ class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 		)
 		self.initialize(window_size)
 
+		self.handshaked = False
 		self.sock_type = DGRAM
 		self.ip_version = ip_version
 		self.udt_ver = UDT_VER
@@ -245,7 +256,7 @@ class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 
 	def on_close(self):
 		# send shutdown
-		pass
+		self._data_event.set()
 
 ### Server
 
@@ -259,12 +270,26 @@ class UDTServer(BaseUDTSocket, UDPServer):
 	def on_accept(self, client):
 		client.syn_cookie = random(6)
 		client.mss = self.mss
-		
+		client.handshaked = False
+
 		inlay(client, DataQueue)
 		client.initialize(self.flight_flag_size)
 
 		self._handle_packet(client)
+		self._data_stream(client)
 
 	def on_close(self, client):
 		# send shutdown
-		pass
+		client._data_event.set()
+
+	@coroutine
+	def _data_stream(self, client):
+		while 1:
+			yield client._data_event.wait()
+			yield self.on_data_ready(client)
+
+	@coroutine
+	def on_data_ready(self, client):
+		'''Server connection on data callback'''
+
+		raise NotImplemented

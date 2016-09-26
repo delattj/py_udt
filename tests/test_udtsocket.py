@@ -11,13 +11,9 @@ c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
 def test():
 	try:
 		r = yield c.connect()
-		s_client = s.clients.values()[0]
+		# s_client = s.clients.values()[0]
 
 		c.send("ABCDEFGHIJKLMNOP")
-		data = yield s_client.recv(16)
-		print data
-
-		s_client.send("ABCDEFGHIJKLMNOP")
 		data = yield c.recv(16)
 		print data
 
@@ -26,8 +22,16 @@ def test():
 		s.close()
 		pass
 
+class EchoUDTServer(udt.udtsocket.UDTServer):
 
-s = udt.udtsocket.UDTServer()
+	@coroutine
+	def on_data_ready(self, client):
+		data = yield client.recv(16)
+		print data
+
+		client.send(data)
+
+s = EchoUDTServer()
 s.bind(47008)
 
 test()
