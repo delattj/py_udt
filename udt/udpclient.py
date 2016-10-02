@@ -27,6 +27,17 @@ def _set_stack(exc):
 class Shutdown(Exception):
 	pass
 
+class Cancel(Exception):
+	pass
+
+class FutureExt(Future):
+
+	def cancel(self):
+		self.set_exception(Cancel())
+
+	def cancelled(self):
+		return isinstance(self.exception(), Cancel)
+
 class UDPSocket(object):
 	def __init__(self, host, port, ip_version=AF_INET, io_loop=None,
 		mtu=1500, window_size=25600):
@@ -45,6 +56,7 @@ class UDPSocket(object):
 
 		self._waiting_connect = None
 		self._waiting_packet = None
+		self._waiting_outbound = None
 
 	def start(self):
 		IOLoop.instance().start()
@@ -74,6 +86,7 @@ class UDPSocket(object):
 	def close(self):
 		self.on_close()
 		self._shutdown_get_next_packet()
+		self._shutdown_outbound()
 		self.io_loop.remove_handler(self.socket.fileno())
 		self.socket.shutdown(socket.SHUT_RDWR)
 		self.socket.close()
@@ -93,11 +106,9 @@ class UDPSocket(object):
 		assert self._waiting_packet is None
 
 		if not self._inbound_packet:
-			f = Future()
+			f = FutureExt()
 			self._waiting_packet = f
-			r = yield f
-			if not r:
-				raise Shutdown()
+			yield f
 
 		b = self._inbound_packet.popleft()
 
@@ -110,14 +121,14 @@ class UDPSocket(object):
 		if not self._inbound_packet:
 			return
 
-		self._waiting_packet.set_result(1)
+		self._waiting_packet.set_result(None)
 		self._waiting_packet = None
 
 	def _shutdown_get_next_packet(self):
 		if self._waiting_packet is None:
 			return
 
-		self._waiting_packet.set_result(0)
+		self._waiting_packet.cancel()
 		self._waiting_packet = None
 
 	def _handle_read(self):
@@ -139,8 +150,34 @@ class UDPSocket(object):
 		self._wake_get_next_packet()
 
 	def write(self, data):
-		self._outbound_packet.append(data)
+		if self._waiting_outbound is not None:
+			return self._waiting_outbound
+
+		out = self._outbound_packet
+		if len(out) == out.maxlen:
+			# Buffer is full, return a future for future notification
+			f = FutureExt()
+			self._waiting_outbound = f
+			return f
+
+		out.append(data)
 		self._add_io_state(self.io_loop.WRITE)
+
+	def _wake_outbound(self):
+		if self._waiting_outbound is None:
+			return
+
+		outbound = self._outbound_packet
+		if len(outbound) < outbound.maxlen:
+			self._waiting_outbound.set_result(None)
+			self._waiting_outbound = None
+
+	def _shutdown_outbound(self):
+		if self._waiting_outbound is None:
+			return
+
+		self._waiting_outbound.cancel()
+		self._waiting_outbound = None
 
 	def _handle_write(self):
 		outbound = self._outbound_packet
@@ -156,6 +193,8 @@ class UDPSocket(object):
 			if e.args[0] not in _ERRNO_WOULDBLOCK:
 				self.close()
 				raise
+
+		self._wake_outbound()
 
 	def _handle_events(self, fd, events):
 		if self.closed():
@@ -204,6 +243,7 @@ class UDPSocket(object):
 
 		if not self._outbound_packet:
 			self._remove_io_state(self.io_loop.WRITE)
+
 		self._add_io_state(self.io_loop.READ)
 
 		self._waiting_connect.set_result(self)

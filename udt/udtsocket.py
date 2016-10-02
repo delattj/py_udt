@@ -47,6 +47,12 @@ AF_INET6 = socket.AF_INET6
 _srandom = random.SystemRandom().random
 random = lambda p: int(_srandom()*10**p)
 
+def get_file_size(fd):
+	fd.seek(0, 2)
+	l = fd.tell()
+	fd.seek(0)
+	return l
+
 def inlay(target, source):
 	'''Hot patch *target* instance with methods from *source* class'''
 	for method_name, method in source.__dict__.items():
@@ -54,6 +60,35 @@ def inlay(target, source):
 			b_method = MethodType(method, target, target.__class__)
 			setattr(target, method_name, b_method)
 
+class EventQueue(object):
+	__slots__ = ('_queue',)
+
+	def __init__(self):
+		self._queue = deque()
+
+	def next(self, n=None):
+		q = self._queue 
+		if q:
+			if n is None or n == 1:
+				q.popleft().set_result(None)
+
+			elif n > 0:
+				for _ in xrange(min(n, len(q))):
+					q.popleft().set_result(None)
+
+	def all(self):
+		q = self._queue 
+		if q:
+			for _ in xrange(len(q)):
+				q.popleft().set_result(None)
+
+	def wait(self):
+		f = Future()
+		self._queue.append(f)
+		return f
+
+	def __nonzero__(self):
+		return bool(self._queue)
 
 ### Base Class
 
@@ -119,14 +154,16 @@ class BaseUDTSocket:
 
 class DataQueue(object):
 
-	def initialize(self, window_size=25600):
+	def initialize(self, window_size=25600, write_queue=None):
 		self._rcv_data = DictSequence(window_size, seq_keeper)
 		self._sent_data = DictSequence(window_size, seq_keeper)
 		self._left_over = ""
 		self._data_event = Event()
+		self._write_queue = EventQueue() if write_queue is None else write_queue
+		self._last_ack = -1
 
 	def push_data(self, seq, data):
-		print "@", seq
+		# print "@", seq
 		last_no = self._rcv_data.last_read
 		next_no = seq_keeper.incr(last_no)
 
@@ -137,6 +174,7 @@ class DataQueue(object):
 		self._rcv_data[seq] = data
 
 		if offset == 0:
+			self._last_ack = seq
 			self._data_event.set()
 			return
 
@@ -147,6 +185,7 @@ class DataQueue(object):
 
 		# Notify if we have a sequense of data that can be read
 		if len_next_seq > 0:
+			self._last_ack = seq
 			self._data_event.set()
 
 	@coroutine
@@ -155,9 +194,9 @@ class DataQueue(object):
 		if self.closed():
 			raise Shutdown()
 
-		self._data_event.clear()
-
 		data = self._left_over
+		max_len -= len(self._left_over)
+
 		for d in self._rcv_data:
 			max_len -= len(d)
 			data += d
@@ -170,6 +209,8 @@ class DataQueue(object):
 
 		else:
 			self._left_over = ""
+			if self._rcv_data.last_read == self._last_ack:
+				self._data_event.clear()
 
 		raise Return(data)
 
@@ -182,7 +223,42 @@ class DataQueue(object):
 		self._data_event.clear()
 		raise Return(''.join(self._rcv_data))
 
+	@coroutine
+	def recv_file(self, fd, length):
+		while length:
+			yield self._data_event.wait()
+			if self.closed():
+				raise Shutdown()
+
+			left_over = self._left_over
+			if left_over:
+				fd.write(left_over)
+				length -= len(left_over)
+				self._left_over = ""
+	
+			for d in self._rcv_data:
+				length -= len(d)
+				if length < 0:
+					self._left_over = d[length:]
+					d = d[:length]
+					length = 0
+
+				fd.write(d)
+				if length == 0:
+					break
+
+			if not self._left_over\
+					and self._rcv_data.last_read == self._last_ack:
+				self._data_event.clear()
+
+	@coroutine
 	def send(self, data):
+		if self._write_queue:
+			yield self._write_queue.wait()
+			if self.closed():
+				raise Shutdown()
+
+		q = 1
 		length = len(data)
 		data_size = self.mss - data_header_size
 		n_packet = length / data_size + int(bool(length % data_size))
@@ -193,7 +269,48 @@ class DataQueue(object):
 			)
 			p.set_seq(self._sent_data.add(p))
 
-			self.write(p.pack())
+			pack = p.pack()
+			write_future = self.write(pack)
+			if write_future is not None:
+				if not self._write_queue:
+					self._write_queue.wait()
+					q += 1
+
+				yield write_future
+				self.write(pack)
+
+		self._write_queue.next(q)
+
+	@coroutine
+	def send_file(self, fd):
+		if self._write_queue:
+			yield self._write_queue.wait()
+			if self.closed():
+				raise Shutdown()
+
+		q = 1
+		data_size = self.mss - data_header_size
+		length = get_file_size(fd)
+		n_packet = length / data_size + int(bool(length % data_size))
+		for n in xrange(n_packet):
+			p = DataPacket(
+				sock_id=self.sock_id,
+				data=fd.read(data_size)
+			)
+			p.set_seq(self._sent_data.add(p))
+
+			pack = p.pack()
+			write_future = self.write(pack)
+			if write_future is not None:
+				if not self._write_queue:
+					self._write_queue.wait()
+					q += 1
+
+				yield write_future
+				self.write(pack)
+
+		self._write_queue.next(q)
+
 
 ### Client
 
@@ -267,13 +384,15 @@ class UDTServer(BaseUDTSocket, UDPServer):
 
 		super(UDTServer, self).__init__(ip_version, io_loop, mtu, window_size)
 
+		self._write_queue = EventQueue()
+
 	def on_accept(self, client):
 		client.syn_cookie = random(6)
 		client.mss = self.mss
 		client.handshaked = False
 
 		inlay(client, DataQueue)
-		client.initialize(self.flight_flag_size)
+		client.initialize(self.flight_flag_size, self._write_queue)
 
 		self._handle_packet(client)
 		self._data_stream(client)

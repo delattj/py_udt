@@ -35,11 +35,9 @@ class UDPClient(object):
 		assert self._waiting_packet is None
 
 		if not self._inbound_packet:
-			f = Future()
+			f = FutureExt()
 			self._waiting_packet = f
-			r = yield f
-			if not r:
-				raise Shutdown()
+			yield f
 
 		b = self._inbound_packet.popleft()
 
@@ -52,14 +50,14 @@ class UDPClient(object):
 		if not self._inbound_packet:
 			return
 
-		self._waiting_packet.set_result(1)
+		self._waiting_packet.set_result(None)
 		self._waiting_packet = None
 
 	def _shutdown_get_next_packet(self):
 		if self._waiting_packet is None:
 			return
 
-		self._waiting_packet.set_result(0)
+		self._waiting_packet.cancel()
 		self._waiting_packet = None
 
 	def closed(self):
@@ -83,6 +81,8 @@ class UDPServer(object):
 		self._outbound_packet = deque(maxlen=window_size)
 		self.flight_flag_size = window_size
 		self.mss = mtu - 28 # 28 -> IP header size
+
+		self._waiting_outbound = None
 
 	def bind(self, port):
 		self.port = port
@@ -116,6 +116,7 @@ class UDPServer(object):
 	def close(self):
 		for c in self.clients.values():
 			c.close()
+		self._shutdown_outbound()
 		self.io_loop.remove_handler(self.socket.fileno())
 		self.socket.shutdown(socket.SHUT_RDWR)
 		self.socket.close()
@@ -157,8 +158,34 @@ class UDPServer(object):
 			c._wake_get_next_packet()
 
 	def _writeto(self, data, addr):
-		self._outbound_packet.append((data, addr))
+		if self._waiting_outbound is not None:
+			return self._waiting_outbound
+
+		out = self._outbound_packet
+		if len(out) == out.maxlen:
+			# Buffer is full, return a future for future notification
+			f = FutureExt()
+			self._waiting_outbound = f
+			return f
+
+		out.append((data, addr))
 		self._add_io_state(self.io_loop.WRITE)
+
+	def _wake_outbound(self):
+		if self._waiting_outbound is None:
+			return
+
+		outbound = self._outbound_packet
+		if len(outbound) < outbound.maxlen:
+			self._waiting_outbound.set_result(None)
+			self._waiting_outbound = None
+
+	def _shutdown_outbound(self):
+		if self._waiting_outbound is None:
+			return
+
+		self._waiting_outbound.cancel()
+		self._waiting_outbound = None
 
 	def _handle_write(self):
 		outbound = self._outbound_packet
@@ -176,6 +203,8 @@ class UDPServer(object):
 
 			self._get_client(addr).close()
 			raise
+
+		self._wake_outbound()
 
 	def _handle_events(self, fd, events):
 		if self.closed():
