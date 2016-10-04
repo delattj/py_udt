@@ -6,7 +6,15 @@ import udt.udtsocket
 from struct import Struct
 from tornado.gen import coroutine, sleep
 
+FilePath = Struct('>260s')
 Int = Struct('>I')
+
+def remove_padding(s):
+	e = s.find('\0')
+	if e >= 0:
+		s = s[:e]
+
+	return s
 
 c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
 
@@ -15,8 +23,9 @@ def test():
 	try:
 		yield c.connect()
 
-		filename = 'laydown.jpg'
-		c.send(filename)
+		# filename = 'laydown.jpg'
+		filename = 'BrokenAge.zip'
+		c.send(FilePath.pack(filename))
 		size = yield c.recv(Int.size)
 		size, = Int.unpack(size)
 		print "#", size
@@ -37,16 +46,16 @@ class FileUDTServer(udt.udtsocket.UDTServer):
 
 	@coroutine
 	def on_data_ready(self, client):
-		filename = yield client.recv(11)
-		print "!", filename
+		filename = yield client.recv(FilePath.size)
+		filename = remove_padding(filename)
 		file_path = os.path.expanduser(
 			os.path.join('~', 'Desktop', filename)
 		)
+		size = os.path.getsize(file_path)
+		print "!", filename, size
+		client.send(Int.pack(size))
 		with open(file_path, 'rb') as f:
-			size = udt.udtsocket.get_file_size(f)
-			print size
-			client.send(Int.pack(size))
-			client.send_file(f)
+			yield client.send_file(f, size)
 
 		# client.send(data)
 

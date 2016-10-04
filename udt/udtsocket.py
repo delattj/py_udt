@@ -47,12 +47,6 @@ AF_INET6 = socket.AF_INET6
 _srandom = random.SystemRandom().random
 random = lambda p: int(_srandom()*10**p)
 
-def get_file_size(fd):
-	fd.seek(0, 2)
-	l = fd.tell()
-	fd.seek(0)
-	return l
-
 def inlay(target, source):
 	'''Hot patch *target* instance with methods from *source* class'''
 	for method_name, method in source.__dict__.items():
@@ -154,38 +148,32 @@ class BaseUDTSocket:
 
 class DataQueue(object):
 
-	def initialize(self, window_size=25600, write_queue=None):
+	def initialize(self, window_size=45, write_queue=None):
 		self._rcv_data = DictSequence(window_size, seq_keeper)
 		self._sent_data = DictSequence(window_size, seq_keeper)
 		self._left_over = ""
 		self._data_event = Event()
 		self._write_queue = EventQueue() if write_queue is None else write_queue
-		self._last_ack = -1
+		self._next_seq = -1
 
 	def push_data(self, seq, data):
 		# print "@", seq
-		last_no = self._rcv_data.last_read
-		next_no = seq_keeper.incr(last_no)
+		last_no = self._rcv_data.seq_no
 
-		offset = seq_keeper.offset(next_no, seq)
-		if offset < 0:
+		offset = seq_keeper.offset(last_no, seq)
+		if offset < 1:
 			return # drop that packet, we already received it.
 
 		self._rcv_data[seq] = data
 
-		if offset == 0:
-			self._last_ack = seq
-			self._data_event.set()
-			return
-
 		# data loss detection
-		len_next_seq = self._rcv_data.len_next_seq()
-		if offset > len_next_seq:
-			print "@ data lost", offset - len_next_seq
+		next_seq = self._rcv_data.next_seq()
+		offset = seq_keeper.offset(seq, next_seq)
+		if offset < 0:
+			print "@ data lost", seq_keeper.incr(next_seq)
 
 		# Notify if we have a sequense of data that can be read
-		if len_next_seq > 0:
-			self._last_ack = seq
+		if self._rcv_data.has_seq_data():
 			self._data_event.set()
 
 	@coroutine
@@ -195,11 +183,12 @@ class DataQueue(object):
 			raise Shutdown()
 
 		data = self._left_over
-		max_len -= len(self._left_over)
+		if data:
+			max_len -= len(data)
 
 		for d in self._rcv_data:
-			max_len -= len(d)
 			data += d
+			max_len -= len(d)
 			if max_len <= 0:
 				break
 
@@ -209,7 +198,7 @@ class DataQueue(object):
 
 		else:
 			self._left_over = ""
-			if self._rcv_data.last_read == self._last_ack:
+			if not self._rcv_data.has_seq_data():
 				self._data_event.clear()
 
 		raise Return(data)
@@ -226,29 +215,18 @@ class DataQueue(object):
 	@coroutine
 	def recv_file(self, fd, length):
 		while length:
+			# print ">", length
 			yield self._data_event.wait()
 			if self.closed():
 				raise Shutdown()
 
-			left_over = self._left_over
-			if left_over:
-				fd.write(left_over)
-				length -= len(left_over)
-				self._left_over = ""
-	
 			for d in self._rcv_data:
 				length -= len(d)
-				if length < 0:
-					self._left_over = d[length:]
-					d = d[:length]
-					length = 0
-
 				fd.write(d)
 				if length == 0:
 					break
 
-			if not self._left_over\
-					and self._rcv_data.last_read == self._last_ack:
+			if not self._rcv_data.has_seq_data():
 				self._data_event.clear()
 
 	@coroutine
@@ -282,7 +260,7 @@ class DataQueue(object):
 		self._write_queue.next(q)
 
 	@coroutine
-	def send_file(self, fd):
+	def send_file(self, fd, length):
 		if self._write_queue:
 			yield self._write_queue.wait()
 			if self.closed():
@@ -290,14 +268,16 @@ class DataQueue(object):
 
 		q = 1
 		data_size = self.mss - data_header_size
-		length = get_file_size(fd)
 		n_packet = length / data_size + int(bool(length % data_size))
 		for n in xrange(n_packet):
 			p = DataPacket(
 				sock_id=self.sock_id,
 				data=fd.read(data_size)
 			)
+			assert len(p.data) > 0, "Data packet is empty!"
 			p.set_seq(self._sent_data.add(p))
+			# print "%", p.seq, len(p.data)
+			del self._sent_data[p.seq] # until ack is intruduced, else it leaks
 
 			pack = p.pack()
 			write_future = self.write(pack)
@@ -305,6 +285,9 @@ class DataQueue(object):
 				if not self._write_queue:
 					self._write_queue.wait()
 					q += 1
+
+				# print "@@@@@@@@"
+				yield sleep(.001)
 
 				yield write_future
 				self.write(pack)
@@ -316,7 +299,7 @@ class DataQueue(object):
 
 class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 	def __init__(self, host, port, ip_version=AF_INET, io_loop=None,
-		mtu=MTU, window_size=25600):
+		mtu=MTU, window_size=45):
 
 		super(UDTSocket, self).__init__(host, port,
 			ip_version, io_loop, mtu, window_size
@@ -380,7 +363,7 @@ class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 class UDTServer(BaseUDTSocket, UDPServer):
 
 	def __init__(self, ip_version=AF_INET, io_loop=None,
-		mtu=1500, window_size=25600):
+		mtu=1500, window_size=45):
 
 		super(UDTServer, self).__init__(ip_version, io_loop, mtu, window_size)
 

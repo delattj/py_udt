@@ -19,20 +19,25 @@ class UDPClient(object):
 		self._waiting_packet = None
 
 	def write(self, data):
-		self._writeto(data, self.addr)
+		return self._writeto(data, self.addr)
 
 	def has_packet(self):
 		return bool(self._inbound_packet)
 
 	def push_packet(self, packet):
-		if len(self._inbound_packet) >= self.flight_flag_size:
+		inbound = self._inbound_packet
+		b_left = len(inbound) - inbound.maxlen
+		if b_left >= 0:
 			return # drop packet
 
-		self._inbound_packet.append(packet)
+		inbound.append(packet)
+		if b_left == -1:
+			raise BufferFull()
 
 	@coroutine
 	def get_next_packet(self):
 		assert self._waiting_packet is None
+		# Only one coroutine can wait for incoming packet
 
 		if not self._inbound_packet:
 			f = FutureExt()
@@ -74,6 +79,7 @@ class UDPServer(object):
 		mtu=1500, window_size=25600):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		# print self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
 		self._state = None
 		self.io_loop = io_loop or IOLoop.instance()
 		self.port = None
@@ -153,6 +159,9 @@ class UDPServer(object):
 				self.close()
 				raise
 
+		except BufferFull:
+			pass
+
 		for c in clients:
 			# Wake up client socket
 			c._wake_get_next_packet()
@@ -199,6 +208,7 @@ class UDPServer(object):
 
 		except socket.error as e:
 			if e.args[0] in _ERRNO_WOULDBLOCK:
+				print "!"*30
 				return # retry later
 
 			self._get_client(addr).close()

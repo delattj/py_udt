@@ -25,7 +25,7 @@ class SequenceKeeper(object):
 		return d + self.max_no + 1
 
 	def len(self, a, b):
-		return (b - a + 1) if a <= b else (b - a + self.max_no + 2)
+		return (b - a) if a <= b else (b - a + self.max_no + 1)
 
 
 class DictSequence(dict):
@@ -55,19 +55,21 @@ class DictSequence(dict):
 		except KeyError:
 			pass
 
-	def len_next_seq(self):
-		'''Evalute length of next iterable sequence'''
-		no = self.last_read
-		size = self.size
+	def next_seq(self):
+		'''Find next iterable sequence'''
+		no = self.seq_no
 		incr = self.keeper.incr
-		for _ in xrange(size):
-			i = incr(no)
-			if i not in self:
+		for _ in xrange(self.keeper.threshold):
+			no = incr(no)
+			if no not in self:
 				break
 
-			no = i
+			self.seq_no = no
 
-		return self.keeper.len(self.last_read, no) - 1
+		return self.seq_no
+
+	def has_seq_data(self):
+		return self.last_read != self.seq_no
 
 	def add(self, item):
 		i = self.keeper.incr(self.seq_no)
@@ -87,5 +89,5 @@ if __name__ == "__main__":
 	u.add("c")
 
 	print k.offset(9, 3) -1
-	print u.len_next_seq()
+	print u.next_seq()
 	print ''.join(u)

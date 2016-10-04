@@ -24,6 +24,9 @@ def _set_stack(exc):
 	exc.__traceback__ = extract_stack()
 	return exc
 
+class BufferFull(Exception):
+	pass
+
 class Shutdown(Exception):
 	pass
 
@@ -96,14 +99,19 @@ class UDPSocket(object):
 		return bool(self._inbound_packet)
 
 	def push_packet(self, packet):
-		if len(self._inbound_packet) >= self.flight_flag_size:
+		inbound = self._inbound_packet
+		b_left = len(inbound) - inbound.maxlen
+		if b_left >= 0:
 			return # drop packet
 
-		self._inbound_packet.append(packet)
+		inbound.append(packet)
+		if b_left == -1:
+			raise BufferFull()
 
 	@coroutine
 	def get_next_packet(self):
 		assert self._waiting_packet is None
+		# Only one coroutine can wait for incoming packet
 
 		if not self._inbound_packet:
 			f = FutureExt()
@@ -146,6 +154,9 @@ class UDPSocket(object):
 			if e.args[0] not in _ERRNO_WOULDBLOCK:
 				self.close()
 				raise
+
+		except BufferFull:
+			pass
 
 		self._wake_get_next_packet()
 
