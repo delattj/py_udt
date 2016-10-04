@@ -287,7 +287,7 @@ class DataQueue(object):
 					q += 1
 
 				# print "@@@@@@@@"
-				yield sleep(.001)
+				# yield sleep(.001)
 
 				yield write_future
 				self.write(pack)

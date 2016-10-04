@@ -205,7 +205,11 @@ class UDPSocket(object):
 				self.close()
 				raise
 
-		self._wake_outbound()
+		# Wake up the send buffer after a few millisecond
+		# to let the other end to receive data and UDP socket
+		# to clear its own internal buffer.
+		# self.io_loop.call_later(0.001, self._wake_outbound)
+		self.io_loop.add_callback(self._wake_outbound)
 
 	def _handle_events(self, fd, events):
 		if self.closed():
