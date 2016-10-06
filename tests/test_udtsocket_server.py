@@ -16,32 +16,6 @@ def remove_padding(s):
 
 	return s
 
-c = udt.udtsocket.UDTSocket('127.0.0.1', 47008)
-
-@coroutine
-def test():
-	try:
-		yield c.connect()
-
-		# filename = 'laydown.jpg'
-		filename = 'BrokenAge.zip'
-		c.send(FilePath.pack(filename))
-		size = yield c.recv(Int.size)
-		size, = Int.unpack(size)
-		print "#", size
-		file_path = os.path.expanduser(
-			os.path.join('~', 'Desktop', 'recieved', filename)
-		)
-		with open(file_path, 'wb') as f:
-			yield c.recv_file(f, size)
-
-		# yield sleep(1)
-
-	finally:
-		c.io_loop.stop()
-		c.close()
-		pass
-
 class FileUDTServer(udt.udtsocket.UDTServer):
 
 	@coroutine
@@ -59,10 +33,7 @@ class FileUDTServer(udt.udtsocket.UDTServer):
 
 		# client.send(data)
 
-# s = FileUDTServer()
-# s.bind(47008)
+s = FileUDTServer()
+s.bind(47008)
+s.start()
 
-test()
-
-# s.start()
-c.start()

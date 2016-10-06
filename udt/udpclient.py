@@ -1,5 +1,6 @@
 import os
 import errno
+import struct
 import socket
 from collections import deque
 from traceback import extract_stack
@@ -19,6 +20,9 @@ if hasattr(errno, "WSAEINPROGRESS"):
 _ERRNO_WOULDBLOCK = (errno.EWOULDBLOCK, errno.EAGAIN)
 if hasattr(errno, "WSAEWOULDBLOCK"):
 	_ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)
+
+# ISWIN = os.name == 'nt'
+LINGER = 180
 
 def _set_stack(exc):
 	exc.__traceback__ = extract_stack()
@@ -46,16 +50,16 @@ class UDPSocket(object):
 		mtu=1500, window_size=25600):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		self.socket.setblocking(0)
 		self._state = None
 		self.io_loop = io_loop or IOLoop.instance()
 		self.host = host
 		self.port = port
-		self.reuse_addr = True
 		self.flight_flag_size = window_size
 		self.mss = mtu - 28 # 28 -> IP header size
-		self._outbound_packet = deque(maxlen=window_size)
-		self._inbound_packet = deque(maxlen=window_size)
+		self._outbound_packet = deque(maxlen=50)
+		self._inbound_packet = deque(maxlen=500)
 
 		self._waiting_connect = None
 		self._waiting_packet = None
@@ -65,6 +69,9 @@ class UDPSocket(object):
 		IOLoop.instance().start()
 
 	def _add_io_state(self, state):
+		if self.closed():
+			return
+
 		if self._state is None:
 			self._state = IOLoop.ERROR | state
 			self.io_loop.add_handler(
@@ -76,6 +83,9 @@ class UDPSocket(object):
 			self.io_loop.update_handler(self.socket.fileno(), self._state)
 
 	def _remove_io_state(self, state):
+		if self.closed():
+			return
+
 		if self._state is not None and self._state & state:
 			self._state ^= state
 			self.io_loop.update_handler(self.socket.fileno(), self._state)
@@ -175,11 +185,15 @@ class UDPSocket(object):
 		self._add_io_state(self.io_loop.WRITE)
 
 	def _wake_outbound(self):
+		outbound = self._outbound_packet
+		length = len(outbound)
+		if length:
+			self._add_io_state(self.io_loop.WRITE)
+
 		if self._waiting_outbound is None:
 			return
 
-		outbound = self._outbound_packet
-		if len(outbound) < outbound.maxlen:
+		if length < outbound.maxlen:
 			self._waiting_outbound.set_result(None)
 			self._waiting_outbound = None
 
@@ -192,9 +206,14 @@ class UDPSocket(object):
 
 	def _handle_write(self):
 		outbound = self._outbound_packet
+		window_size = self.flight_flag_size
 		try:
 			while outbound:
 				b = outbound[0]
+				window_size -= len(b)
+				if window_size <= 0:
+					break
+
 				self.socket.send(b)
 				outbound.popleft() # remove only if it worked
 
@@ -208,8 +227,7 @@ class UDPSocket(object):
 		# Wake up the send buffer after a few millisecond
 		# to let the other end to receive data and UDP socket
 		# to clear its own internal buffer.
-		# self.io_loop.call_later(0.001, self._wake_outbound)
-		self.io_loop.add_callback(self._wake_outbound)
+		self.io_loop.call_later(0.01, self._wake_outbound)
 
 	def _handle_events(self, fd, events):
 		if self.closed():
@@ -227,13 +245,7 @@ class UDPSocket(object):
 		if events & self.io_loop.ERROR:
 			print ('ERROR Event in %s' % self)
 
-	def set_reuse_addr(self):
-		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
 	def connect(self):
-		if self.reuse_addr:
-			self.set_reuse_addr()
-
 		f = self._waiting_connect = Future()
 
 		err = self.socket.connect_ex((self.host, self.port))

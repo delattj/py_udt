@@ -46,6 +46,8 @@ AF_INET6 = socket.AF_INET6
 #
 _srandom = random.SystemRandom().random
 random = lambda p: int(_srandom()*10**p)
+_rstruct = Struct('>I')
+random_id = lambda: _rstruct.unpack(os.urandom(4))[0]
 
 def inlay(target, source):
 	'''Hot patch *target* instance with methods from *source* class'''
@@ -148,7 +150,7 @@ class BaseUDTSocket:
 
 class DataQueue(object):
 
-	def initialize(self, window_size=45, write_queue=None):
+	def initialize(self, window_size=25600, write_queue=None):
 		self._rcv_data = DictSequence(window_size, seq_keeper)
 		self._sent_data = DictSequence(window_size, seq_keeper)
 		self._left_over = ""
@@ -299,7 +301,7 @@ class DataQueue(object):
 
 class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 	def __init__(self, host, port, ip_version=AF_INET, io_loop=None,
-		mtu=MTU, window_size=45):
+		mtu=MTU, window_size=25600):
 
 		super(UDTSocket, self).__init__(host, port,
 			ip_version, io_loop, mtu, window_size
@@ -310,7 +312,7 @@ class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 		self.sock_type = DGRAM
 		self.ip_version = ip_version
 		self.udt_ver = UDT_VER
-		self.sock_id = random(6)
+		self.sock_id = random_id()
 
 	@coroutine
 	def handshake(self):
@@ -363,14 +365,14 @@ class UDTSocket(DataQueue, BaseUDTSocket, UDPSocket):
 class UDTServer(BaseUDTSocket, UDPServer):
 
 	def __init__(self, ip_version=AF_INET, io_loop=None,
-		mtu=1500, window_size=45):
+		mtu=1500, window_size=25600):
 
 		super(UDTServer, self).__init__(ip_version, io_loop, mtu, window_size)
 
 		self._write_queue = EventQueue()
 
 	def on_accept(self, client):
-		client.syn_cookie = random(6)
+		client.syn_cookie = random_id()
 		client.mss = self.mss
 		client.handshaked = False
 

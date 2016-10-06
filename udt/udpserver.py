@@ -8,10 +8,9 @@ from tornado.ioloop import IOLoop
 from tornado.gen import coroutine, Return, Future
 
 class UDPClient(object):
-	def __init__(self, server, addr, flight_flag_size):
+	def __init__(self, server, addr):
 		self.addr = addr
-		self._inbound_packet = deque(maxlen=flight_flag_size)
-		self.flight_flag_size = flight_flag_size
+		self._inbound_packet = deque(maxlen=500)
 		self.shutdown = False
 		self._server = server
 		self._writeto = server._writeto
@@ -80,11 +79,13 @@ class UDPServer(object):
 
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		# print self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
+		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		self.socket.setblocking(0)
 		self._state = None
 		self.io_loop = io_loop or IOLoop.instance()
 		self.port = None
 		self.clients = {}
-		self._outbound_packet = deque(maxlen=window_size)
+		self._outbound_packet = deque(maxlen=50)
 		self.flight_flag_size = window_size
 		self.mss = mtu - 28 # 28 -> IP header size
 
@@ -92,8 +93,6 @@ class UDPServer(object):
 
 	def bind(self, port):
 		self.port = port
-		self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		self.socket.setblocking(0)
 		self.socket.bind(('', port))
 		self._add_io_state(self.io_loop.READ)
 
@@ -101,6 +100,9 @@ class UDPServer(object):
 		IOLoop.instance().start()
 
 	def _add_io_state(self, state):
+		if self.closed():
+			return
+
 		if self._state is None:
 			self._state = IOLoop.ERROR | state
 			self.io_loop.add_handler(
@@ -112,6 +114,9 @@ class UDPServer(object):
 			self.io_loop.update_handler(self.socket.fileno(), self._state)
 
 	def _remove_io_state(self, state):
+		if self.closed():
+			return
+
 		if self._state is not None and self._state & state:
 			self._state ^= state
 			self.io_loop.update_handler(self.socket.fileno(), self._state)
@@ -133,7 +138,7 @@ class UDPServer(object):
 			c = self.clients[addr]
 
 		else:
-			c = UDPClient(self, addr, self.flight_flag_size)
+			c = UDPClient(self, addr)
 			self.clients[addr] = c
 			self.io_loop.spawn_callback(self.on_accept, c)
 
@@ -144,7 +149,6 @@ class UDPServer(object):
 
 		try:
 			while 1:
-
 				b, addr = self.socket.recvfrom(self.mss)
 
 				if not b:
@@ -155,8 +159,10 @@ class UDPServer(object):
 				c.push_packet(b)
 
 		except socket.error as e:
+			# if e.args[0] == 10054:
+			# 	pass
+
 			if e.args[0] not in _ERRNO_WOULDBLOCK:
-				self.close()
 				raise
 
 		except BufferFull:
@@ -181,11 +187,15 @@ class UDPServer(object):
 		self._add_io_state(self.io_loop.WRITE)
 
 	def _wake_outbound(self):
+		outbound = self._outbound_packet
+		length = len(outbound)
+		if length:
+			self._add_io_state(self.io_loop.WRITE)
+
 		if self._waiting_outbound is None:
 			return
 
-		outbound = self._outbound_packet
-		if len(outbound) < outbound.maxlen:
+		if length < outbound.maxlen:
 			self._waiting_outbound.set_result(None)
 			self._waiting_outbound = None
 
@@ -198,9 +208,14 @@ class UDPServer(object):
 
 	def _handle_write(self):
 		outbound = self._outbound_packet
+		window_size = self.flight_flag_size
 		try:
 			while outbound:
 				b, addr = outbound[0]
+				window_size -= len(b)
+				if window_size <= 0:
+					break
+
 				self.socket.sendto(b, addr)
 				outbound.popleft() # remove only if it worked
 
@@ -216,8 +231,7 @@ class UDPServer(object):
 		# Wake up the send buffer after a few millisecond
 		# to let the other end to receive data and UDP socket
 		# to clear its own internal buffer.
-		# self.io_loop.call_later(0.001, self._wake_outbound)
-		self.io_loop.add_callback(self._wake_outbound)
+		self.io_loop.call_later(0.01, self._wake_outbound)
 
 	def _handle_events(self, fd, events):
 		if self.closed():
